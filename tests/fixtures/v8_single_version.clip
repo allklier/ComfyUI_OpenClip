@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<clip type="clip" version="8">
+	<name type="string">test_clip</name>
+	<tracks>
+		<track uid="aabbccdd">
+			<feeds currentVersion="v001">
+				<feed vuid="v001" uid="11223344">
+					<storageFormat type="format">
+						<type>video</type>
+					</storageFormat>
+					<spans>
+						<span>
+							<path encoding="pattern">media/test_clip.[001001-001004].exr</path>
+						</span>
+					</spans>
+				</feed>
+			</feeds>
+		</track>
+	</tracks>
+</clip>

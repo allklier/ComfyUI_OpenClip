@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<clip type="clip" version="8">
+	<name type="string">multi_clip</name>
+	<tracks>
+		<track uid="aabbccdd">
+			<feeds currentVersion="v002">
+				<feed vuid="v001" uid="11111111">
+					<storageFormat type="format">
+						<type>video</type>
+					</storageFormat>
+					<spans>
+						<span>
+							<path encoding="pattern">media/v001/multi_clip.[001001-001004].exr</path>
+						</span>
+					</spans>
+				</feed>
+				<feed vuid="v002" uid="22222222">
+					<storageFormat type="format">
+						<type>video</type>
+					</storageFormat>
+					<spans>
+						<span>
+							<path encoding="pattern">media/v002/multi_clip.[001001-001004].exr</path>
+						</span>
+					</spans>
+				</feed>
+				<feed vuid="v003" uid="33333333">
+					<storageFormat type="format">
+						<type>video</type>
+					</storageFormat>
+					<spans>
+						<span>
+							<path encoding="pattern">media/v003/multi_clip.[001001-001004].exr</path>
+						</span>
+					</spans>
+				</feed>
+			</feeds>
+		</track>
+	</tracks>
+</clip>

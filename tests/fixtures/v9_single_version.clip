@@ -1,0 +1,27 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<clip version="9">
+  <name>test_clip_v9</name>
+  <tracks>
+    <track>
+      <versions currentVersion="v001">
+        <version uid="v001">
+          <name>v001</name>
+          <feeds>
+            <feed>
+              <storageFormat>
+                <type>video</type>
+              </storageFormat>
+              <spans>
+                <span>
+                  <path>media/test_clip_v9.%04d.exr</path>
+                  <startFrame>1001</startFrame>
+                  <duration>4</duration>
+                </span>
+              </spans>
+            </feed>
+          </feeds>
+        </version>
+      </versions>
+    </track>
+  </tracks>
+</clip>
