@@ -53,15 +53,20 @@ Converts the Reader's linear output to `Rec.1886 Rec.709 - Display` using an OCI
 
 ## Requirements
 
-- ComfyUI
-- `lxml` — XML parse and serialise
-- `OpenImageIO` — EXR and PNG I/O
-- `opencolorio` — OCIO colour transforms (only required for the Colour Transform node)
+| Package | Purpose | Required |
+|---|---|---|
+| `lxml` | XML parse and serialise | Always |
+| `openimageio` | EXR and PNG I/O | Always |
+| `opencolorio` | OCIO colour transforms | Colour Transform node only |
 
-Install dependencies:
+**ComfyUI Manager** installs all dependencies automatically from `requirements.txt` when you install the node pack — no manual steps needed.
+
+**Manual install:**
 ```bash
-pip install lxml openimageio opencolorio
+pip install -r requirements.txt
 ```
+
+If you don't need the Colour Transform node, `opencolorio` can be skipped — the other three nodes will load and run without it.
 
 ---
 
