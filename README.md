@@ -2,7 +2,7 @@
 
 OpenClip read/write nodes for ComfyUI, designed for VFX pipelines that use Autodesk Flame.
 
-Frames rendered in ComfyUI are written as versioned OpenClip packages that Flame can import directly from its MediaHub. Clips exported from Flame can be read back into ComfyUI for processing. The full round-trip preserves versioning, frame ranges, and colour space metadata.
+Frames rendered in ComfyUI are written as versioned OpenClip packages that Flame can import directly from its MediaHub. Clips exported from Flame can be read back into ComfyUI for processing. 
 
 ---
 
@@ -19,7 +19,7 @@ Writes an image sequence and generates a `.clip` XML manifest that Flame can imp
 ### OpenClip Reader
 Reads any version from an existing `.clip` file and returns an IMAGE and MASK tensor batch.
 
-- Supports OpenClip v8 and v9
+- Supports OpenClip v8
 - **path_from / path_to** fields remap embedded media paths for clips copied between machines (airgap / network mount scenarios)
 - Auto-remap mode: leave `path_from` empty and the reader probes the filesystem to find the media relative to the clip file
 
@@ -82,27 +82,6 @@ git clone https://github.com/janklier/ComfyOpenClip.git
 ```
 
 Restart ComfyUI. The four nodes appear under the **OpenClip** category.
-
----
-
-## Package layout on disk
-
-The Writer always produces a **Standard Flame** layout:
-
-```
-<output_dir>/
-  <clip_name>/
-    <clip_name>.clip                          ← OpenClip XML manifest
-    versions/
-      v001/
-        <clip_name>.1001.exr                  ← image sequence
-        <clip_name>.1002.exr
-        <clip_name>.v001.comfy.json           ← workflow sidecar (publish only)
-      v002/
-        ...
-```
-
-This matches what Flame produces on its own exports, so the folder can be scanned directly from the Flame MediaHub.
 
 ---
 
