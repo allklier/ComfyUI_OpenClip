@@ -55,7 +55,7 @@ def _clip_with_seq(tmp_path: Path, clip_name: str, version: str, n_frames: int =
 def test_read_v8_clip_end_to_end(tmp_path):
     clip_path, original = _clip_with_seq(tmp_path, "sh010", "v001")
     reader = OpenClipReader()
-    images, masks, frame_count, width, height, clip_version = reader.execute(
+    images, masks, frame_count, width, height, clip_version, *_ = reader.execute(
         clip_path=clip_path, version="current",
         start_frame=-1, end_frame=-1, load_alpha=False,
         path_from="", path_to="",
@@ -130,7 +130,8 @@ def test_write_standard_flame_layout(tmp_path):
     writer = OpenClipWriter()
     images = torch.rand(4, 64, 64, 3)
     (clip_path,) = writer.execute(
-        IMAGE=images, output_dir=str(tmp_path), clip_name="myshot",
+        IMAGE=images, clip_path=str(tmp_path), clip_name="myshot",
+        clip_filename="$path/$clip_name",
         version_name="v001", fps="24", start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=False,
@@ -146,7 +147,8 @@ def test_write_flat_layout(tmp_path):
     writer = OpenClipWriter()
     images = torch.rand(4, 64, 64, 3)
     (clip_path,) = writer.execute(
-        IMAGE=images, output_dir=str(tmp_path), clip_name="myshot",
+        IMAGE=images, clip_path=str(tmp_path), clip_name="myshot",
+        clip_filename="$path/$clip_name",
         version_name="v001", fps="24", start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
         layout="Flat", publish=False,
@@ -159,7 +161,8 @@ def test_write_png_sequence(tmp_path):
     writer = OpenClipWriter()
     images = torch.rand(4, 64, 64, 3)
     (clip_path,) = writer.execute(
-        IMAGE=images, output_dir=str(tmp_path), clip_name="myshot",
+        IMAGE=images, clip_path=str(tmp_path), clip_name="myshot",
+        clip_filename="$path/$clip_name",
         version_name="v001", fps="24", start_frame=1, frame_padding=4,
         file_format="PNG", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
         layout="Flat", publish=False,
@@ -172,7 +175,8 @@ def test_write_publish_creates_sidecar(tmp_path):
     images = torch.rand(4, 64, 64, 3)
     workflow = {"nodes": [{"id": 1, "type": "KSampler"}]}
     (clip_path,) = writer.execute(
-        IMAGE=images, output_dir=str(tmp_path), clip_name="myshot",
+        IMAGE=images, clip_path=str(tmp_path), clip_name="myshot",
+        clip_filename="$path/$clip_name",
         version_name="v001", fps="24", start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=True,
@@ -198,7 +202,8 @@ def test_write_no_publish_no_sidecar(tmp_path):
     writer = OpenClipWriter()
     images = torch.rand(4, 64, 64, 3)
     writer.execute(
-        IMAGE=images, output_dir=str(tmp_path), clip_name="myshot",
+        IMAGE=images, clip_path=str(tmp_path), clip_name="myshot",
+        clip_filename="$path/$clip_name",
         version_name="v001", fps="24", start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=False,
@@ -213,7 +218,8 @@ def test_round_trip_rgb(tmp_path):
     writer = OpenClipWriter()
     original = torch.rand(4, 64, 64, 3)
     (clip_path,) = writer.execute(
-        IMAGE=original, output_dir=str(tmp_path), clip_name="rt",
+        IMAGE=original, clip_path=str(tmp_path), clip_name="rt",
+        clip_filename="$path/$clip_name",
         version_name="v001", fps="24", start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="float (32-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=False,
@@ -235,7 +241,8 @@ def test_round_trip_rgba(tmp_path):
     original_mask = torch.full((4, 64, 64), 0.75)
     (clip_path,) = writer.execute(
         IMAGE=original_img, MASK=original_mask,
-        output_dir=str(tmp_path), clip_name="rt_rgba",
+        clip_path=str(tmp_path), clip_name="rt_rgba",
+        clip_filename="$path/$clip_name",
         version_name="v001", fps="24", start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="float (32-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=False,
@@ -256,13 +263,15 @@ def test_write_second_version_adds_to_clip(tmp_path):
     images_v2 = torch.ones(4, 64, 64, 3)
 
     (clip_v1,) = writer.execute(
-        IMAGE=images_v1, output_dir=str(tmp_path), clip_name="mv",
+        IMAGE=images_v1, clip_path=str(tmp_path), clip_name="mv",
+        clip_filename="$path/$clip_name",
         version_name="v001", fps="24", start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="float (32-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=False,
     )
     (clip_v2,) = writer.execute(
-        IMAGE=images_v2, output_dir=str(tmp_path), clip_name="mv",
+        IMAGE=images_v2, clip_path=str(tmp_path), clip_name="mv",
+        clip_filename="$path/$clip_name",
         version_name="v002", fps="24", start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="float (32-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=False,
@@ -287,14 +296,16 @@ def test_write_duplicate_version_raises(tmp_path):
     writer = OpenClipWriter()
     images = torch.rand(4, 64, 64, 3)
     writer.execute(
-        IMAGE=images, output_dir=str(tmp_path), clip_name="mv",
+        IMAGE=images, clip_path=str(tmp_path), clip_name="mv",
+        clip_filename="$path/$clip_name",
         version_name="v001", fps="24", start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=False,
     )
     with pytest.raises(ValueError, match="already exists"):
         writer.execute(
-            IMAGE=images, output_dir=str(tmp_path), clip_name="mv",
+            IMAGE=images, clip_path=str(tmp_path), clip_name="mv",
+            clip_filename="$path/$clip_name",
             version_name="v001", fps="24", start_frame=1001, frame_padding=4,
             file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
             layout="Standard Flame", publish=False,
@@ -306,14 +317,16 @@ def test_write_format_mismatch_raises(tmp_path):
     images_hd = torch.rand(4, 64, 64, 3)
     images_4k = torch.rand(4, 128, 128, 3)
     writer.execute(
-        IMAGE=images_hd, output_dir=str(tmp_path), clip_name="mv",
+        IMAGE=images_hd, clip_path=str(tmp_path), clip_name="mv",
+        clip_filename="$path/$clip_name",
         version_name="v001", fps="24", start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=False,
     )
     with pytest.raises(ValueError, match="mismatch"):
         writer.execute(
-            IMAGE=images_4k, output_dir=str(tmp_path), clip_name="mv",
+            IMAGE=images_4k, clip_path=str(tmp_path), clip_name="mv",
+            clip_filename="$path/$clip_name",
             version_name="v002", fps="24", start_frame=1001, frame_padding=4,
             file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
             layout="Standard Flame", publish=False,
@@ -328,7 +341,7 @@ def test_exr_half_vs_float_both_readable(tmp_path):
     for bit_depth in ("half (16-bit)", "float (32-bit)"):
         pattern = str(tmp_path / f"{bit_depth[:4]}.%04d.exr")
         image_io.write_sequence(pattern, images, None, 1, "EXR", bit_depth, "ZIP")
-        read, _ = image_io.read_sequence(pattern, 1, 1, load_alpha=False)
+        read, _, _meta = image_io.read_sequence(pattern, 1, 1, load_alpha=False)
         assert read.shape == (1, 64, 64, 3)
 
 
@@ -337,7 +350,7 @@ def test_exr_compression_variants_round_trip(tmp_path):
     for compression in ("ZIP", "PIZ", "DWAB"):
         pattern = str(tmp_path / f"{compression}.%04d.exr")
         image_io.write_sequence(pattern, images, None, 1, "EXR", "half (16-bit)", compression)
-        read, _ = image_io.read_sequence(pattern, 1, 1, load_alpha=False)
+        read, _, _meta = image_io.read_sequence(pattern, 1, 1, load_alpha=False)
         assert read.shape == (1, 64, 64, 3)
 
 

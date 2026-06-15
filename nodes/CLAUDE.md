@@ -30,6 +30,10 @@ Reads an OpenClip `.clip` XML package and outputs image tensors frame by frame (
 | `width` | `INT` | Frame width in pixels |
 | `height` | `INT` | Frame height in pixels |
 | `clip_version` | `STRING` | OpenClip schema version detected (`"8"` or `"9"`) |
+| `start_frame` | `INT` | Actual first frame number used (resolved from span or explicit input) |
+| `clip_path` | `STRING` | Pass-through of the resolved input clip path — wire into Writer's `clip_path` |
+| `clip_name` | `STRING` | Clip name from the XML `<name>` element — wire into Writer's `clip_name` |
+| `metadata` | `CLIP_METADATA` | Dict of EXR header attributes from the first frame — wire into Writer's `CLIP_METADATA` |
 
 ---
 
@@ -45,10 +49,12 @@ OpenClip XML is always written as version 8 (v9 is not yet released by Autodesk)
 |---|---|---|
 | `IMAGE` | `IMAGE` | RGB tensor batch |
 | `MASK` | `MASK` | Optional alpha; merged into EXR alpha channel if connected |
-| `output_dir` | `STRING` | Root directory for the package |
-| `clip_name` | `STRING` | Name of the clip (used for directory and file naming) |
+| `CLIP_METADATA` | `CLIP_METADATA` | Optional EXR header metadata to write into output frames (e.g. tape name, timecodes). Only applied when connected; writer format settings (compression, etc.) always override any matching keys. |
+| `clip_path` | `STRING` | Folder path for the output package. If a `.clip` file path is supplied (e.g. wired from Reader), the parent directory is used automatically. |
+| `clip_name` | `STRING` | Clip name used for directory and file naming. Can be wired from Reader's `clip_name` output. |
+| `clip_filename` | `STRING` | Destination pattern; default `$path/$clip_name.clip`. `$path` expands to `clip_path` (normalised to a folder); `$clip_name` expands to `clip_name`. Supports `..` segments, e.g. `$path/../processed/$clip_name.clip`. The `.clip` extension is stripped before passing the name to the layout builder, so the package is named correctly regardless. |
 | `version_name` | `STRING` | Version label, e.g. `v001` |
-| `start_frame` | `INT` | Frame number for the first output file |
+| `start_frame` | `INT` | Frame number for the first output file — wire from Reader's `start_frame` to preserve numbering |
 | `frame_padding` | `INT` | Zero-padding width (default `4` → `%04d`) |
 | `fps` | `COMBO` | Frame rate: `23.976`, `24`, `25`, `29.97`, `30`, `48`, `50`, `59.94`, `60` — written into `<editRate>` and `<sampleRate>` |
 | `file_format` | `COMBO` | `EXR` or `PNG` |
@@ -91,8 +97,18 @@ Inspects a `.clip` file and lets an artist pick a version interactively. Intende
 | `selected_version` | `STRING` | The version chosen (or `currentVersion` if input was empty) |
 | `current_version` | `STRING` | The version marked as `currentVersion` in the XML |
 
-**Typical wiring:**
+**Typical wiring — version selection into Reader:**
 ```
 OpenClipVersionSelector.clip_path        → OpenClipReader.clip_path
 OpenClipVersionSelector.selected_version → OpenClipReader.version
+```
+
+**Typical wiring — full read → process → write round-trip:**
+```
+OpenClipReader.start_frame → OpenClipWriter.start_frame   (preserves frame numbering)
+OpenClipReader.clip_path   → OpenClipWriter.clip_path     (same destination folder)
+OpenClipReader.clip_name   → OpenClipWriter.clip_name     (same clip name)
+OpenClipReader.metadata    → OpenClipWriter.CLIP_METADATA (carry EXR header attrs)
+# Writer clip_filename stays at default "$path/$clip_name"
+# Change version_name on the Writer to add a new version to the same clip
 ```

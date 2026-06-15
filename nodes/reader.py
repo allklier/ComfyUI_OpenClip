@@ -28,8 +28,8 @@ class OpenClipReader:
             }
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK", "INT", "INT", "INT", "STRING")
-    RETURN_NAMES = ("IMAGE", "MASK", "frame_count", "width", "height", "clip_version")
+    RETURN_TYPES = ("IMAGE", "MASK", "INT", "INT", "INT", "STRING", "INT", "STRING", "STRING", "CLIP_METADATA")
+    RETURN_NAMES = ("IMAGE", "MASK", "frame_count", "width", "height", "clip_version", "start_frame", "clip_path", "clip_name", "metadata")
     FUNCTION = "execute"
     CATEGORY = "OpenClip"
 
@@ -68,12 +68,15 @@ class OpenClipReader:
         resolved_start = span.start_frame if start_frame == -1 else start_frame
         resolved_end = (span.start_frame + span.duration - 1) if end_frame == -1 else end_frame
 
-        images, masks = image_io.read_sequence(
+        images, masks, metadata = image_io.read_sequence(
             abs_pattern, resolved_start, resolved_end, load_alpha
         )
 
         frame_count, height, width = images.shape[0], images.shape[1], images.shape[2]
-        return images, masks, frame_count, width, height, parsed.schema_version
+        return (
+            images, masks, frame_count, width, height, parsed.schema_version,
+            resolved_start, clip_path, parsed.clip_name, metadata,
+        )
 
 
 def _remap_prefix(path: str, path_from: str, path_to: str) -> str:

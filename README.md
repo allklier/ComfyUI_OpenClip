@@ -15,6 +15,9 @@ Writes an image sequence and generates a `.clip` XML manifest that Flame can imp
 - Each run adds a new version to an existing clip rather than overwriting it
 - Mismatched resolution or frame rate raises an error before writing anything
 - Optional **Publish** mode attaches the active ComfyUI workflow JSON as a sidecar file alongside the image sequence
+- **clip_path** and **clip_name** inputs can be wired directly from the Reader to keep the same destination folder and clip name without retyping
+- **clip_filename** pattern field (default `$path/$clip_name.clip`) supports `$path` and `$clip_name` tokens, so prefixes and suffixes can be added with minimal typing (e.g. `$path/$clip_name_grade.clip`). Path segments with `..` are resolved, so `$path/../processed/$clip_name.clip` works as expected.
+- Optional **CLIP_METADATA** input: when wired from the Reader, EXR header metadata from the source clip (tape name, timecodes, scene/take, etc.) is carried through and written into the output files
 
 ### OpenClip Reader
 Reads any version from an existing `.clip` file and returns an IMAGE and MASK tensor batch.
@@ -22,6 +25,8 @@ Reads any version from an existing `.clip` file and returns an IMAGE and MASK te
 - Supports OpenClip v8
 - **path_from / path_to** fields remap embedded media paths for clips copied between machines (airgap / network mount scenarios)
 - Auto-remap mode: leave `path_from` empty and the reader probes the filesystem to find the media relative to the clip file
+- Outputs **start_frame**, **clip_path**, and **clip_name** for direct wiring into the Writer to preserve frame numbering, folder, and clip name across a round-trip
+- Outputs **CLIP_METADATA** — a dict of EXR header attributes from the first frame, ready to wire into the Writer
 
 ### OpenClip Version Selector
 Inspects a `.clip` file and lets you pick a version before wiring it into the Reader.
@@ -39,15 +44,11 @@ Converts the Reader's linear output to `Rec.1886 Rec.709 - Display` using an OCI
 
 ---
 
-## Screenshots
+## Screenshot
 
-**Write workflow** — load a video and write it as an OpenClip package in two formats simultaneously:
+**Full round-trip** — select a version, read the clip, apply a colour transform, preview, then write back with frame numbering, folder, clip name, and EXR metadata all carried through automatically:
 
-![Write workflow](docs/screenshot_write.png)
-
-**Read workflow** — select a version, read the clip, apply a colour transform, and preview:
-
-![Read workflow](docs/screenshot_read.png)
+![Round-trip workflow with metadata](docs/screenshot_writewithmetadata.png)
 
 ---
 

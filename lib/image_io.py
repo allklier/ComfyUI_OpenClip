@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 import numpy as np
@@ -19,14 +20,27 @@ _OIIO_COMPRESSIONS: dict[str, str] = {
     "DWAB": "dwab",
 }
 
+# Attributes set explicitly by writer format options; never overwritten by carried metadata.
+_SKIP_METADATA_KEYS: frozenset[str] = frozenset({
+    "compression",
+    "openexr:chunkCount",
+    "openexr:maxSamplesPerPixel",
+    "openexr:roundingMode",
+    "openexr:dwaCompressionLevel",
+    "openexr:multiView",
+})
+
 
 def read_sequence(
     path_pattern: str,
     start_frame: int,
     end_frame: int,
     load_alpha: bool,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Read a frame sequence. Returns (IMAGE [N,H,W,3], MASK [N,H,W])."""
+) -> tuple[torch.Tensor, torch.Tensor, dict]:
+    """Read a frame sequence. Returns (IMAGE [N,H,W,3], MASK [N,H,W], metadata).
+
+    metadata is extracted from the first frame's OIIO extra_attribs.
+    """
     n_frames = end_frame - start_frame + 1
     if n_frames <= 0:
         raise ValueError(f"start_frame ({start_frame}) must be <= end_frame ({end_frame})")
@@ -35,15 +49,18 @@ def read_sequence(
 
     images: list[torch.Tensor] = []
     masks: list[torch.Tensor] = []
+    metadata: dict = {}
 
     for i in range(n_frames):
         frame_num = start_frame + i
         filepath = path_pattern % frame_num
-        image, mask = _read_frame(filepath, load_alpha)
+        image, mask, frame_meta = _read_frame(filepath, load_alpha)
         images.append(image)
         masks.append(mask)
+        if i == 0:
+            metadata = frame_meta
 
-    return torch.stack(images), torch.stack(masks)
+    return torch.stack(images), torch.stack(masks), metadata
 
 
 def write_sequence(
@@ -54,8 +71,13 @@ def write_sequence(
     file_format: str,
     exr_bit_depth: str = "half (16-bit)",
     exr_compression: str = "ZIP",
+    metadata: Optional[dict] = None,
 ) -> None:
-    """Write a frame sequence to disk."""
+    """Write a frame sequence to disk.
+
+    When metadata is provided it is written into each EXR header, with writer
+    format settings (compression, etc.) applied last so they always win.
+    """
     n_frames = images.shape[0]
     if n_frames > MAX_FRAMES:
         raise RuntimeError(f"Frame count {n_frames} exceeds MAX_FRAMES={MAX_FRAMES}")
@@ -68,19 +90,30 @@ def write_sequence(
         frame_num = start_frame + i
         filepath = path_pattern % frame_num
         mask = masks[i] if masks is not None else None
-        _write_frame(filepath, images[i], mask, file_format, exr_bit_depth, exr_compression)
+        _write_frame(filepath, images[i], mask, file_format, exr_bit_depth, exr_compression, metadata)
 
 
 # --- private helpers ---
 
 
-def _read_frame(filepath: str, load_alpha: bool) -> tuple[torch.Tensor, torch.Tensor]:
+def _extract_frame_metadata(spec) -> dict:
+    result = {}
+    for attr in spec.extra_attribs:
+        try:
+            result[attr.name] = attr.value
+        except Exception:
+            pass
+    return result
+
+
+def _read_frame(filepath: str, load_alpha: bool) -> tuple[torch.Tensor, torch.Tensor, dict]:
     inp = oiio.ImageInput.open(str(filepath))
     if not inp:
         raise FileNotFoundError(f"OIIO could not open: {filepath}")
 
     spec = inp.spec()
     pixels = inp.read_image(oiio.FLOAT)
+    metadata = _extract_frame_metadata(spec)
     inp.close()
 
     if pixels is None:
@@ -96,7 +129,7 @@ def _read_frame(filepath: str, load_alpha: bool) -> tuple[torch.Tensor, torch.Te
         image = torch.from_numpy(pixels[:, :, :3])
         mask = torch.zeros(h, w, dtype=torch.float32)
 
-    return image, mask
+    return image, mask, metadata
 
 
 def _write_frame(
@@ -106,6 +139,7 @@ def _write_frame(
     file_format: str,
     exr_bit_depth: str,
     exr_compression: str,
+    metadata: Optional[dict] = None,
 ) -> None:
     if mask is not None:
         pixels = torch.cat([image, mask.unsqueeze(-1)], dim=-1).numpy()
@@ -119,6 +153,14 @@ def _write_frame(
     if file_format == "EXR":
         dtype = _OIIO_BIT_DEPTHS[exr_bit_depth]
         spec = oiio.ImageSpec(width, height, nchannels, dtype)
+        if metadata:
+            for key, value in metadata.items():
+                if key not in _SKIP_METADATA_KEYS:
+                    try:
+                        spec[key] = value
+                    except Exception:
+                        pass
+        # Writer format settings are applied last so they always override carried metadata.
         spec["compression"] = _OIIO_COMPRESSIONS[exr_compression]
         pixels_write = pixels.astype(np.float32)
     else:

@@ -14,7 +14,7 @@ from ComfyOpenClip.lib import image_io
 
 def test_read_exr_rgb(image_fixtures):
     pattern = str(image_fixtures / "test_rgb.%04d.exr")
-    images, masks = image_io.read_sequence(pattern, 0, 0, load_alpha=False)
+    images, masks, _ = image_io.read_sequence(pattern, 0, 0, load_alpha=False)
     assert images.shape == (1, 64, 64, 3)
     assert masks.shape == (1, 64, 64)
     assert images.dtype == torch.float32
@@ -23,7 +23,7 @@ def test_read_exr_rgb(image_fixtures):
 
 def test_read_exr_rgba_with_alpha(image_fixtures):
     pattern = str(image_fixtures / "test_rgba.%04d.exr")
-    images, masks = image_io.read_sequence(pattern, 0, 0, load_alpha=True)
+    images, masks, _ = image_io.read_sequence(pattern, 0, 0, load_alpha=True)
     assert images.shape == (1, 64, 64, 3)
     assert masks.shape == (1, 64, 64)
     assert torch.any(masks > 0.0)
@@ -31,20 +31,20 @@ def test_read_exr_rgba_with_alpha(image_fixtures):
 
 def test_read_exr_rgba_alpha_ignored(image_fixtures):
     pattern = str(image_fixtures / "test_rgba.%04d.exr")
-    images, masks = image_io.read_sequence(pattern, 0, 0, load_alpha=False)
+    images, masks, _ = image_io.read_sequence(pattern, 0, 0, load_alpha=False)
     assert torch.all(masks == 0.0)
 
 
 def test_read_png_rgb(image_fixtures):
     pattern = str(image_fixtures / "test_rgb.%04d.png")
-    images, masks = image_io.read_sequence(pattern, 0, 0, load_alpha=False)
+    images, masks, _ = image_io.read_sequence(pattern, 0, 0, load_alpha=False)
     assert images.shape == (1, 64, 64, 3)
     assert torch.all(masks == 0.0)
 
 
 def test_read_png_rgba_with_alpha(image_fixtures):
     pattern = str(image_fixtures / "test_rgba.%04d.png")
-    images, masks = image_io.read_sequence(pattern, 0, 0, load_alpha=True)
+    images, masks, _ = image_io.read_sequence(pattern, 0, 0, load_alpha=True)
     assert torch.any(masks > 0.0)
 
 
@@ -101,7 +101,7 @@ def test_write_exr_rgba_alpha_preserved(tmp_path):
     image = _make_image()
     mask = _make_mask()
     image_io.write_sequence(pattern, image, mask, 1001, "EXR", "half (16-bit)", "ZIP")
-    read_images, read_masks = image_io.read_sequence(pattern, 1001, 1001, load_alpha=True)
+    read_images, read_masks, _ = image_io.read_sequence(pattern, 1001, 1001, load_alpha=True)
     assert read_masks.shape == (1, 64, 64)
     assert torch.all(read_masks > 0.5)
 
@@ -115,7 +115,7 @@ def test_write_png_rgb(tmp_path):
 def test_write_png_rgba(tmp_path):
     pattern = str(tmp_path / "frame.%04d.png")
     image_io.write_sequence(pattern, _make_image(), _make_mask(), 1, "PNG", "half (16-bit)", "ZIP")
-    read_images, read_masks = image_io.read_sequence(pattern, 1, 1, load_alpha=True)
+    read_images, read_masks, _ = image_io.read_sequence(pattern, 1, 1, load_alpha=True)
     assert torch.any(read_masks > 0.5)
 
 

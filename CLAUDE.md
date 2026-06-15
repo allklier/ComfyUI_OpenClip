@@ -13,6 +13,9 @@ based on the OpenClip standard makes renders and version management easier.
 - All the controls existing for OpenClip in Flame (versioning, etc.)
 - All the controls existing in current Read/Write nodes of ComfyUI (frame ranges, etc.)
 - Ability to handle alpha channels
+- Reader outputs start_frame, clip_path, and clip_name so they can be wired directly into the Writer for round-trip workflows without retyping
+- Writer accepts a clip_filename pattern (`$path/$clip_name`) to compose the output destination from wired inputs with optional prefixes/suffixes
+- EXR header metadata (tape name, timecodes, scene/take, etc.) extracted on read and optionally carried through to written files via a CLIP_METADATA output/input pair
 
 ## Architecture Decisions
 
@@ -29,6 +32,9 @@ based on the OpenClip standard makes renders and version management easier.
 | Publish (workspace JSON) | Sidecar `.comfy.json` + path reference in XML | Inspectable on disk; mirrors Flame "publish" concept for artists |
 | Image I/O | OpenImageIO (OIIO) | Handles EXR and PNG in one library; full multi-part and deep EXR support |
 | Distribution | ComfyUI Manager custom node pack | One-click install; still works as manual copy to `custom_nodes/` |
+| Round-trip wiring | Reader outputs start_frame, clip_path, clip_name, CLIP_METADATA | Direct connections to Writer avoid retyping and prevent numbering drift |
+| Writer destination | `clip_path` + `clip_name` + `clip_filename` pattern replaces flat `output_dir` | `$path`/`$clip_name` tokens allow suffixes without breaking wired connections |
+| EXR metadata carry | CLIP_METADATA type (Python dict of OIIO extra_attribs) | Optional; only applied when input is connected; writer format attrs always win |
 
 ### Module Layout
 

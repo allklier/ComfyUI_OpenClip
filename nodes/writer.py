@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -16,8 +17,9 @@ class OpenClipWriter:
         return {
             "required": {
                 "IMAGE": ("IMAGE",),
-                "output_dir": ("STRING", {"default": ""}),
+                "clip_path": ("STRING", {"default": ""}),
                 "clip_name": ("STRING", {"default": ""}),
+                "clip_filename": ("STRING", {"default": "$path/$clip_name.clip"}),
                 "version_name": ("STRING", {"default": "v001"}),
                 "fps": (openclip_xml.FPS_OPTIONS, {"default": "24"}),
                 "start_frame": ("INT", {"default": 1001, "min": 0, "max": 999999}),
@@ -29,6 +31,7 @@ class OpenClipWriter:
             },
             "optional": {
                 "MASK": ("MASK",),
+                "CLIP_METADATA": ("CLIP_METADATA",),
             },
             "hidden": {
                 "extra_pnginfo": "EXTRA_PNGINFO",
@@ -45,8 +48,9 @@ class OpenClipWriter:
     def execute(
         self,
         IMAGE: torch.Tensor,
-        output_dir: str,
+        clip_path: str,
         clip_name: str,
+        clip_filename: str,
         version_name: str,
         fps: str,
         start_frame: int,
@@ -58,15 +62,13 @@ class OpenClipWriter:
         layout: str = "Standard Flame",
         publish: bool = False,
         MASK: Optional[torch.Tensor] = None,
+        CLIP_METADATA: Optional[dict] = None,
         extra_pnginfo: Optional[dict] = None,
         prompt=None,
     ):
-        output_dir = output_dir.strip()
-        clip_name = clip_name.strip()
-        if not output_dir:
-            raise ValueError("output_dir is required")
-        if not clip_name:
-            raise ValueError("clip_name is required")
+        output_dir, clip_name = _resolve_destination(
+            clip_path.strip(), clip_name.strip(), clip_filename.strip()
+        )
 
         paths = package_layout.build(
             layout, output_dir, clip_name, version_name, file_format, frame_padding
@@ -75,7 +77,8 @@ class OpenClipWriter:
 
         abs_pattern = str(paths.media_dir / f"{clip_name}.%0{frame_padding}d.{file_format.lower()}")
         image_io.write_sequence(
-            abs_pattern, IMAGE, MASK, start_frame, file_format, exr_bit_depth, exr_compression
+            abs_pattern, IMAGE, MASK, start_frame, file_format, exr_bit_depth, exr_compression,
+            metadata=CLIP_METADATA,
         )
 
         n_frames, height, width = IMAGE.shape[0], IMAGE.shape[1], IMAGE.shape[2]
@@ -143,6 +146,55 @@ def _format_mismatches(
     if existing.file_format and new.file_format and existing.file_format != new.file_format:
         results.append(("file_format", existing.file_format, new.file_format))
     return results
+
+
+def _resolve_destination(clip_path_in: str, clip_name_in: str, clip_filename: str) -> tuple[str, str]:
+    """Expand $path/$clip_name tokens in clip_filename, then split into (output_dir, clip_name).
+
+    $path  → clip_path_in, normalised to a folder (parent dir if a .clip file was supplied).
+    $clip_name → clip_name_in.
+
+    The expanded result is normalised (resolves ..) and split on the last component.
+    The caller can use $path/../sibling/$clip_name to navigate relative to the source clip.
+    """
+    if not clip_filename:
+        raise ValueError("clip_filename is required")
+
+    folder = _normalize_to_folder(clip_path_in)
+    expanded = clip_filename
+
+    if "$path" in expanded:
+        if not folder:
+            raise ValueError("clip_path is required when clip_filename contains $path")
+        expanded = expanded.replace("$path", folder)
+
+    if "$clip_name" in expanded:
+        if not clip_name_in:
+            raise ValueError("clip_name is required when clip_filename contains $clip_name")
+        expanded = expanded.replace("$clip_name", clip_name_in)
+
+    # Collapse any .. segments without requiring the path to exist yet.
+    expanded = os.path.normpath(expanded)
+
+    p = Path(expanded)
+    if not p.parent or str(p.parent) == ".":
+        raise ValueError(
+            f"clip_filename must resolve to a path with a parent directory "
+            f"(e.g. /output/myshot), got: '{expanded}'"
+        )
+
+    name = p.stem if p.suffix.lower() == ".clip" else p.name
+    return str(p.parent), name
+
+
+def _normalize_to_folder(val: str) -> str:
+    """Return val as a folder path. If val points to a .clip file, return its parent dir."""
+    if not val:
+        return ""
+    p = Path(val)
+    if p.suffix.lower() == ".clip":
+        return str(p.parent)
+    return val
 
 
 def _write_publish_sidecar(
