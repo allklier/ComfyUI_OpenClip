@@ -7,11 +7,11 @@ from pathlib import Path
 import pytest
 import torch
 
-from ComfyOpenClip.lib import image_io, openclip_xml, package_layout
-from ComfyOpenClip.lib.openclip_xml import ClipSpan, ClipVersion
-from ComfyOpenClip.nodes.reader import OpenClipReader
-from ComfyOpenClip.nodes.version_selector import OpenClipVersionSelector
-from ComfyOpenClip.nodes.writer import OpenClipWriter
+from ComfyUI_OpenClip.lib import image_io, openclip_xml, package_layout
+from ComfyUI_OpenClip.lib.openclip_xml import ClipSpan, ClipVersion
+from ComfyUI_OpenClip.nodes.reader import OpenClipReader
+from ComfyUI_OpenClip.nodes.version_selector import OpenClipVersionSelector
+from ComfyUI_OpenClip.nodes.writer import OpenClipWriter
 
 
 # --- helpers ---
@@ -55,7 +55,7 @@ def _clip_with_seq(tmp_path: Path, clip_name: str, version: str, n_frames: int =
 def test_read_v8_clip_end_to_end(tmp_path):
     clip_path, original = _clip_with_seq(tmp_path, "sh010", "v001")
     reader = OpenClipReader()
-    images, masks, frame_count, width, height, clip_version, *_ = reader.execute(
+    images, masks, frame_count, width, height, format_version, *_, fps = reader.execute(
         clip_path=clip_path, version="current",
         start_frame=-1, end_frame=-1, load_alpha=False,
         path_from="", path_to="",
@@ -64,7 +64,8 @@ def test_read_v8_clip_end_to_end(tmp_path):
     assert frame_count == 4
     assert width == 64
     assert height == 64
-    assert clip_version == "8"
+    assert format_version == "8"
+    assert fps == 24.0  # _clip_with_seq() calls generate() with fmt=None, defaulting to ClipFormat().fps
 
 
 def test_read_explicit_version(tmp_path):
@@ -131,8 +132,8 @@ def test_write_standard_flame_layout(tmp_path):
     images = torch.rand(4, 64, 64, 3)
     (clip_path,) = writer.execute(
         IMAGE=images, clip_path=str(tmp_path), clip_name="myshot",
-        clip_filename="$path/$clip_name",
-        version_name="v001", fps="24", start_frame=1001, frame_padding=4,
+        clip_filename="$(path)/$(clip_name)",
+        version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=False,
     )
@@ -143,13 +144,28 @@ def test_write_standard_flame_layout(tmp_path):
     assert (media_dir / "myshot.1004.exr").exists()
 
 
+def test_write_include_version_in_filename(tmp_path):
+    writer = OpenClipWriter()
+    images = torch.rand(4, 64, 64, 3)
+    (clip_path,) = writer.execute(
+        IMAGE=images, clip_path=str(tmp_path), clip_name="myshot",
+        clip_filename="$(path)/$(clip_name)",
+        version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
+        file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
+        layout="Standard Flame", publish=False, include_version_in_filename=True,
+    )
+    assert Path(clip_path).name == "myshot.clip"
+    media_dir = tmp_path / "myshot" / "versions" / "v001"
+    assert (media_dir / "myshot.v001.1001.exr").exists()
+
+
 def test_write_flat_layout(tmp_path):
     writer = OpenClipWriter()
     images = torch.rand(4, 64, 64, 3)
     (clip_path,) = writer.execute(
         IMAGE=images, clip_path=str(tmp_path), clip_name="myshot",
-        clip_filename="$path/$clip_name",
-        version_name="v001", fps="24", start_frame=1001, frame_padding=4,
+        clip_filename="$(path)/$(clip_name)",
+        version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
         layout="Flat", publish=False,
     )
@@ -162,8 +178,8 @@ def test_write_png_sequence(tmp_path):
     images = torch.rand(4, 64, 64, 3)
     (clip_path,) = writer.execute(
         IMAGE=images, clip_path=str(tmp_path), clip_name="myshot",
-        clip_filename="$path/$clip_name",
-        version_name="v001", fps="24", start_frame=1, frame_padding=4,
+        clip_filename="$(path)/$(clip_name)",
+        version_name="v001", fps=24.0, start_frame=1, frame_padding=4,
         file_format="PNG", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
         layout="Flat", publish=False,
     )
@@ -176,8 +192,8 @@ def test_write_publish_creates_sidecar(tmp_path):
     workflow = {"nodes": [{"id": 1, "type": "KSampler"}]}
     (clip_path,) = writer.execute(
         IMAGE=images, clip_path=str(tmp_path), clip_name="myshot",
-        clip_filename="$path/$clip_name",
-        version_name="v001", fps="24", start_frame=1001, frame_padding=4,
+        clip_filename="$(path)/$(clip_name)",
+        version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=True,
         extra_pnginfo={"workflow": workflow},
@@ -203,8 +219,8 @@ def test_write_no_publish_no_sidecar(tmp_path):
     images = torch.rand(4, 64, 64, 3)
     writer.execute(
         IMAGE=images, clip_path=str(tmp_path), clip_name="myshot",
-        clip_filename="$path/$clip_name",
-        version_name="v001", fps="24", start_frame=1001, frame_padding=4,
+        clip_filename="$(path)/$(clip_name)",
+        version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=False,
     )
@@ -219,8 +235,8 @@ def test_round_trip_rgb(tmp_path):
     original = torch.rand(4, 64, 64, 3)
     (clip_path,) = writer.execute(
         IMAGE=original, clip_path=str(tmp_path), clip_name="rt",
-        clip_filename="$path/$clip_name",
-        version_name="v001", fps="24", start_frame=1001, frame_padding=4,
+        clip_filename="$(path)/$(clip_name)",
+        version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="float (32-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=False,
     )
@@ -242,8 +258,8 @@ def test_round_trip_rgba(tmp_path):
     (clip_path,) = writer.execute(
         IMAGE=original_img, MASK=original_mask,
         clip_path=str(tmp_path), clip_name="rt_rgba",
-        clip_filename="$path/$clip_name",
-        version_name="v001", fps="24", start_frame=1001, frame_padding=4,
+        clip_filename="$(path)/$(clip_name)",
+        version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="float (32-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=False,
     )
@@ -257,6 +273,28 @@ def test_round_trip_rgba(tmp_path):
     assert torch.allclose(masks, original_mask, atol=1e-4)
 
 
+def test_round_trip_preserves_fps(tmp_path):
+    # 23.976 is a decimal approximation of the exact NTSC rational 24000/1001;
+    # Writer must match it to the "23.976" label, and Reader must report back
+    # the true rational value, not the literal 23.976 that was passed in.
+    writer = OpenClipWriter()
+    images = torch.rand(4, 64, 64, 3)
+    (clip_path,) = writer.execute(
+        IMAGE=images, clip_path=str(tmp_path), clip_name="rt_fps",
+        clip_filename="$(path)/$(clip_name)",
+        version_name="v001", fps=23.976, start_frame=1001, frame_padding=4,
+        file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
+        layout="Standard Flame", publish=False,
+    )
+    reader = OpenClipReader()
+    *_, fps = reader.execute(
+        clip_path=clip_path, version="current",
+        start_frame=-1, end_frame=-1, load_alpha=False,
+        path_from="", path_to="",
+    )
+    assert fps == pytest.approx(24000 / 1001)
+
+
 def test_write_second_version_adds_to_clip(tmp_path):
     writer = OpenClipWriter()
     images_v1 = torch.zeros(4, 64, 64, 3)
@@ -264,15 +302,15 @@ def test_write_second_version_adds_to_clip(tmp_path):
 
     (clip_v1,) = writer.execute(
         IMAGE=images_v1, clip_path=str(tmp_path), clip_name="mv",
-        clip_filename="$path/$clip_name",
-        version_name="v001", fps="24", start_frame=1001, frame_padding=4,
+        clip_filename="$(path)/$(clip_name)",
+        version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="float (32-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=False,
     )
     (clip_v2,) = writer.execute(
         IMAGE=images_v2, clip_path=str(tmp_path), clip_name="mv",
-        clip_filename="$path/$clip_name",
-        version_name="v002", fps="24", start_frame=1001, frame_padding=4,
+        clip_filename="$(path)/$(clip_name)",
+        version_name="v002", fps=24.0, start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="float (32-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=False,
     )
@@ -297,16 +335,16 @@ def test_write_duplicate_version_raises(tmp_path):
     images = torch.rand(4, 64, 64, 3)
     writer.execute(
         IMAGE=images, clip_path=str(tmp_path), clip_name="mv",
-        clip_filename="$path/$clip_name",
-        version_name="v001", fps="24", start_frame=1001, frame_padding=4,
+        clip_filename="$(path)/$(clip_name)",
+        version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=False,
     )
     with pytest.raises(ValueError, match="already exists"):
         writer.execute(
             IMAGE=images, clip_path=str(tmp_path), clip_name="mv",
-            clip_filename="$path/$clip_name",
-            version_name="v001", fps="24", start_frame=1001, frame_padding=4,
+            clip_filename="$(path)/$(clip_name)",
+            version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
             file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
             layout="Standard Flame", publish=False,
         )
@@ -318,16 +356,16 @@ def test_write_format_mismatch_raises(tmp_path):
     images_4k = torch.rand(4, 128, 128, 3)
     writer.execute(
         IMAGE=images_hd, clip_path=str(tmp_path), clip_name="mv",
-        clip_filename="$path/$clip_name",
-        version_name="v001", fps="24", start_frame=1001, frame_padding=4,
+        clip_filename="$(path)/$(clip_name)",
+        version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=False,
     )
     with pytest.raises(ValueError, match="mismatch"):
         writer.execute(
             IMAGE=images_4k, clip_path=str(tmp_path), clip_name="mv",
-            clip_filename="$path/$clip_name",
-            version_name="v002", fps="24", start_frame=1001, frame_padding=4,
+            clip_filename="$(path)/$(clip_name)",
+            version_name="v002", fps=24.0, start_frame=1001, frame_padding=4,
             file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
             layout="Standard Flame", publish=False,
         )
@@ -359,21 +397,20 @@ def test_exr_compression_variants_round_trip(tmp_path):
 
 def test_version_selector_returns_all_versions(v8_multi_clip):
     selector = OpenClipVersionSelector()
-    clip_path, selected, current = selector.execute(
+    clip_path, selected, current, available = selector.execute(
         clip_path=str(v8_multi_clip),
         selected_version="v003",
-        latest_version="",
     )
     assert selected == "v003"
     assert current == "v002"
+    assert available == "v001\nv002  (current)\nv003"
 
 
 def test_version_selector_falls_back_to_current_when_empty(v8_multi_clip):
     selector = OpenClipVersionSelector()
-    _, selected, current = selector.execute(
+    _, selected, current, _available = selector.execute(
         clip_path=str(v8_multi_clip),
         selected_version="",
-        latest_version="",
     )
     assert selected == current == "v002"
 
@@ -384,5 +421,4 @@ def test_version_selector_raises_on_unknown_version(v8_multi_clip):
         selector.execute(
             clip_path=str(v8_multi_clip),
             selected_version="v999",
-            latest_version="",
         )

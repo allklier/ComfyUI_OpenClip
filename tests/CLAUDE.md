@@ -29,6 +29,10 @@ Fixtures live in `tests/fixtures/` and are checked into the repo:
 | `test_parse_v9_single_version` | v9 fixture parsed; same outputs as equivalent v8 clip |
 | `test_generate_v8` | `generate()` produces valid XML; round-trips through `parse()` unchanged |
 | `test_round_trip_preserves_version_schema` | v8 input → parse → generate → output is still v8 |
+| `test_fps_label_from_float_exact_integer_rate` | `25.0` matches label `"25"` |
+| `test_fps_label_from_float_matches_ntsc_decimal_approximation` | `23.976` (decimal approximation) matches label `"23.976"`, not `"24"` |
+| `test_fps_label_from_float_matches_exact_rational` | `24000/1001` (the true rational) matches label `"23.976"` |
+| `test_fps_label_from_float_out_of_tolerance_raises` | A value with no nearby supported rate (`26.5`) raises `ValueError` |
 | `test_missing_version_raises` | Requesting a version name not in the clip raises `ValueError` |
 | `test_current_version_fallback` | `version="current"` resolves to the `currentVersion` attribute value |
 | `test_publish_metadata_in_xml` | When publish path provided, `<userMetadata>` element with correct relative path is present |
@@ -76,13 +80,16 @@ System tests write to a temporary directory (`tmp_path` pytest fixture) and make
 | `test_read_v8_multi_version_select` | Load `v8_multi_version.clip` requesting `v003`; verify frames from that version, not `currentVersion` |
 | `test_read_v8_current_version` | Load with `version="current"`; frames match the `currentVersion` version |
 | `test_write_standard_flame_layout` | Write 4 frames as EXR + Standard Flame layout; verify directory tree, `.clip` XML exists, media paths resolve to actual files |
+| `test_write_include_version_in_filename` | Write with `include_version_in_filename=True`; frame files are named `myshot.v001.####.exr` while the `.clip` filename stays `myshot.clip` |
 | `test_write_flat_layout` | Same for Flat layout |
 | `test_write_png_sequence` | Write 4 frames as PNG; files exist and are valid images |
 | `test_write_publish_sidecar` | Write with `publish=True`; `<clip>.<version>.comfy.json` exists in the version media dir; XML has `<comfyWorkflow>` inside the version's `<userData>`, not at root level |
 | `test_write_no_publish_no_sidecar` | Write with `publish=False`; no `.comfy.json` written |
 | `test_round_trip_rgb` | Write 4 RGB frames; read them back; pixel values match within float tolerance |
 | `test_round_trip_rgba` | Write 4 RGBA frames; read back with `load_alpha=True`; RGB and alpha match within tolerance |
+| `test_round_trip_preserves_fps` | Write with `fps=23.976` (decimal approximation of 24000/1001); Reader's `fps` output matches the exact rational, not the literal input |
 | `test_round_trip_new_version` | Write `v001` then write `v002` to the same clip dir; read back `v002` and verify correct frames |
 | `test_exr_half_vs_float_precision` | Write same frame as half and float; float preserves more precision; both readable |
 | `test_exr_compression_variants` | Write ZIP, PIZ, DWAB; all produce valid EXRs that round-trip pixel data |
 | `test_version_selector_wiring` | VersionSelector on `v8_multi_version.clip` returns all three versions and correct `current_version` |
+| `test_version_selector_returns_all_versions` | `available_versions` output lists all three versions, newline-separated, sorted, with `  (current)` marking `v002` |

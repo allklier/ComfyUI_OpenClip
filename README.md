@@ -16,7 +16,7 @@ Writes an image sequence and generates a `.clip` XML manifest that Flame can imp
 - Mismatched resolution or frame rate raises an error before writing anything
 - Optional **Publish** mode attaches the active ComfyUI workflow JSON as a sidecar file alongside the image sequence
 - **clip_path** and **clip_name** inputs can be wired directly from the Reader to keep the same destination folder and clip name without retyping
-- **clip_filename** pattern field (default `$path/$clip_name.clip`) supports `$path` and `$clip_name` tokens, so prefixes and suffixes can be added with minimal typing (e.g. `$path/$clip_name_grade.clip`). Path segments with `..` are resolved, so `$path/../processed/$clip_name.clip` works as expected.
+- **clip_filename** pattern field (default `$(path)/$(clip_name).clip`) supports `$(path)` and `$(clip_name)` tokens, so prefixes and suffixes can be added with minimal typing (e.g. `$(path)/$(clip_name)_grade.clip`). Path segments with `..` are resolved, so `$(path)/../processed/$(clip_name).clip` works as expected. The expanded name is used for both the `.clip` file and the media sequence filenames.
 - Optional **CLIP_METADATA** input: when wired from the Reader, EXR header metadata from the source clip (tape name, timecodes, scene/take, etc.) is carried through and written into the output files
 
 ### OpenClip Reader
@@ -31,7 +31,8 @@ Reads any version from an existing `.clip` file and returns an IMAGE and MASK te
 ### OpenClip Version Selector
 Inspects a `.clip` file and lets you pick a version before wiring it into the Reader.
 
-- **Refresh & Check** button reads the clip live and shows the current version
+- Outputs **available_versions** — a newline-separated list of every version in the clip, with the current one marked; wire it to a text-preview node to see valid values before typing `selected_version`
+- Outputs **current_version** — the version marked `currentVersion` in the XML
 - Pass `selected_version` directly into the Reader's `version` input
 
 ### OpenClip Colour Transform

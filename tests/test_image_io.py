@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-from ComfyOpenClip.lib import image_io
+from ComfyUI_OpenClip.lib import image_io
 
 
 # --- read tests ---
@@ -46,6 +46,14 @@ def test_read_png_rgba_with_alpha(image_fixtures):
     pattern = str(image_fixtures / "test_rgba.%04d.png")
     images, masks, _ = image_io.read_sequence(pattern, 0, 0, load_alpha=True)
     assert torch.any(masks > 0.0)
+
+
+def test_read_static_path_no_frame_token(image_fixtures):
+    # A literal path with no %d token (Flame encoding="file" stills) is read
+    # as-is, ignoring start/end frame numbers.
+    static_path = str(image_fixtures / "test_rgb.0000.png")
+    images, masks, _ = image_io.read_sequence(static_path, 1, 1, load_alpha=False)
+    assert images.shape == (1, 64, 64, 3)
 
 
 def test_read_missing_frame_raises(tmp_path):

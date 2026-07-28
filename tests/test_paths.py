@@ -4,8 +4,8 @@ from pathlib import Path
 import sys
 import types
 
-from ComfyOpenClip.nodes._paths import resolve_clip_path
-from ComfyOpenClip.nodes.reader import _auto_remap, _remap_prefix
+from ComfyUI_OpenClip.nodes._paths import resolve_clip_path
+from ComfyUI_OpenClip.nodes.reader import _auto_remap, _remap_prefix
 
 
 def test_absolute_path_returned_unchanged(tmp_path):

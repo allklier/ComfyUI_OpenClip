@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from ComfyOpenClip.lib import package_layout
+from ComfyUI_OpenClip.lib import package_layout
 
 
 def test_standard_flame_paths(tmp_path):

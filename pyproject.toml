@@ -10,12 +10,12 @@ requires-python = ">=3.10"
 dependencies = [
     "lxml>=5.0",
     "openimageio>=3.0",
+    "opencolorio>=2.3",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
-    "pytest-asyncio>=0.23",
 ]
 
 [tool.pytest.ini_options]
