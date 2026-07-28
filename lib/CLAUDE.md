@@ -35,14 +35,12 @@ IMAGE + MASK tensors
 
 ## OpenClip XML Schema — `openclip_xml.py`
 
-Both v8 and v9 are XML documents. The schema version is detected from the `version` attribute on the root `<clip>` element.
-
-**v8** stores feeds directly under `<tracks>/<track>/<feeds>`, with `currentVersion` as an attribute on `<feeds>` pointing to a `vuid`.
+The schema version is read from the `version` attribute on the root `<clip>` element and carried through as `ParsedClip.schema_version`, but it does not change the element nesting. **Confirmed against real Flame-exported `.clip` files spanning schema versions 6, 7, 8, and 9**: the structure is identical across all of them. Media (feeds) always lives under `<tracks>/<track>/<feeds>`, and the top-level `<versions>` block (metadata only — name, creationDate, batchSetup, etc.) is always a **sibling of `<tracks>`**, never nested inside `<track>`. There is no version that wraps feeds inside `<versions>/<version>`; a earlier draft of this doc assumed there was, which was never verified and caused real Flame clips tagged `version="9"` to fail to parse with "missing `<versions>` inside `<track>`".
 
 Flame encodes the frame range directly inside the path using `[NNNNNN-NNNNNN]` notation — there are **no separate `<startFrame>` or `<duration>` elements**. The parser converts this to a printf-style pattern plus `start_frame` / `duration` values. Clips we generate use explicit `<startFrame>` and `<duration>` elements with a `%04d`-style path; the parser accepts both formats.
 
 ```xml
-<!-- Flame-generated v8 (range notation in path) -->
+<!-- Flame-generated (range notation in path); identical shape for version="6","7","8","9" -->
 <clip type="clip" version="8">
   <name type="string">my_clip</name>
   <tracks>
@@ -81,36 +79,7 @@ Flame encodes the frame range directly inside the path using `[NNNNNN-NNNNNN]` n
 </clip>
 ```
 
-**v9** wraps feeds in an explicit `<versions>/<version>` layer:
-
-```xml
-<clip version="9">
-  <name>my_clip</name>
-  <tracks>
-    <track>
-      <versions currentVersion="v001">
-        <version uid="v001">
-          <name>v001</name>
-          <feeds>
-            <feed>
-              <storageFormat><type>video</type></storageFormat>
-              <spans>
-                <span>
-                  <path>versions/v001/my_clip.%04d.exr</path>
-                  <startFrame>1001</startFrame>
-                  <duration>100</duration>
-                </span>
-              </spans>
-            </feed>
-          </feeds>
-        </version>
-      </versions>
-    </track>
-  </tracks>
-</clip>
-```
-
-> **Note:** Verify exact attribute names and element nesting against the Autodesk OpenClip specification before coding the parser. The schemas above are indicative, not authoritative.
+A real Flame `<span><path>` can also carry `encoding="file"` for a single static image (a still/screenshot, not a sequence) — no `[NNNN-NNNN]` range and no `<startFrame>`/`<duration>`. `_parse_spans` detects the absence of range notation and represents it as a one-frame span (`start_frame=1`, `duration=1`, path unchanged). `image_io.read_sequence` reads the path literally in this case rather than applying `%` frame substitution, since there is no printf token to substitute. Confirmed against two real Flame-exported clips referencing a single `.png`.
 
 All media paths inside the XML are relative to the `.clip` file's directory.
 

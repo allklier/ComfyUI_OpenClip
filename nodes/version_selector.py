@@ -11,18 +11,15 @@ class OpenClipVersionSelector:
             "required": {
                 "clip_path": ("STRING", {"default": ""}),
                 "selected_version": ("STRING", {"default": ""}),
-                # Display-only: updated by the JS Refresh & Check button.
-                # Python receives this value but does not use it in logic.
-                "latest_version": ("STRING", {"default": "(press Refresh & Check)"}),
             }
         }
 
-    RETURN_TYPES = ("STRING", "STRING", "STRING")
-    RETURN_NAMES = ("clip_path", "selected_version", "current_version")
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("clip_path", "selected_version", "current_version", "available_versions")
     FUNCTION = "execute"
     CATEGORY = "OpenClip"
 
-    def execute(self, clip_path: str, selected_version: str, latest_version: str):
+    def execute(self, clip_path: str, selected_version: str):
         clip_path = resolve_clip_path(clip_path.strip())
         if not clip_path:
             raise ValueError("clip_path is required")
@@ -38,4 +35,12 @@ class OpenClipVersionSelector:
                 f"Available: {available}"
             )
 
-        return clip_path, selected_version, parsed.current_version
+        available_versions = _format_available_versions(parsed.versions.keys(), parsed.current_version)
+        return clip_path, selected_version, parsed.current_version, available_versions
+
+
+def _format_available_versions(version_names, current_version: str) -> str:
+    return "\n".join(
+        f"{name}  (current)" if name == current_version else name
+        for name in sorted(version_names)
+    )

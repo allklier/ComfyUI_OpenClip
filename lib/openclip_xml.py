@@ -89,9 +89,7 @@ def parse(clip_path: str) -> ParsedClip:
         raise ValueError(f"Missing <name> element in {clip_path}")
     clip_name = (name_el.text or "").strip()
 
-    if schema_version == "9":
-        return _parse_v9(root, clip_name)
-    return _parse_v8(root, clip_name)
+    return _parse_clip(root, clip_name, schema_version)
 
 
 def resolve_version(clip: ParsedClip, version: str) -> ClipVersion:
@@ -105,6 +103,27 @@ def resolve_version(clip: ParsedClip, version: str) -> ClipVersion:
 def fps_to_rational(fps: str) -> tuple[int, int]:
     """Return (numerator, denominator) for a frame-rate label, defaulting to 24/1."""
     return _FPS_TABLE.get(fps, (24, 1))
+
+
+_FPS_MATCH_TOLERANCE = 1e-3
+
+
+def fps_label_from_float(value: float, tol: float = _FPS_MATCH_TOLERANCE) -> str:
+    """Match a numeric fps (e.g. from a node graph FLOAT input) to its FPS_OPTIONS label.
+
+    NTSC rates are exact rationals (24000/1001, not 23.976), so this compares
+    against each label's true rational value rather than a parsed decimal.
+    Raises ValueError if no supported rate is within tolerance.
+    """
+    best_label, best_diff = None, None
+    for label in FPS_OPTIONS:
+        num, den = _FPS_TABLE[label]
+        diff = abs((num / den) - value)
+        if best_diff is None or diff < best_diff:
+            best_label, best_diff = label, diff
+    if best_diff > tol:
+        raise ValueError(f"fps {value} does not match any supported rate: {FPS_OPTIONS}")
+    return best_label
 
 
 def read_format(clip_path: str) -> ClipFormat:
@@ -266,7 +285,15 @@ def _append_versions_block(
             etree.SubElement(ud, "comfyWorkflow", path=version.publish_path)
 
 
-def _parse_v8(root: etree._Element, clip_name: str) -> ParsedClip:
+def _parse_clip(root: etree._Element, clip_name: str, schema_version: str) -> ParsedClip:
+    """Parse the clip body, shared by every schema version.
+
+    Confirmed against real Flame-exported clips (schema versions 6, 7, 8,
+    and 9): media always lives at tracks/track/feeds/feed, and the
+    top-level <versions> block (metadata only: name, creationDate,
+    batchSetup, etc.) is always a sibling of <tracks>, never nested inside
+    <track>. There is no structural difference between schema versions.
+    """
     feeds_el = _require(
         _require(_require(root, "tracks"), "track"), "feeds"
     )
@@ -294,35 +321,7 @@ def _parse_v8(root: etree._Element, clip_name: str) -> ParsedClip:
                         versions[uid].publish_path = cw.get("path")
 
     return ParsedClip(
-        schema_version="8",
-        clip_name=clip_name,
-        current_version=current_version,
-        versions=versions,
-    )
-
-
-def _parse_v9(root: etree._Element, clip_name: str) -> ParsedClip:
-    versions_el = _require(
-        _require(_require(root, "tracks"), "track"), "versions"
-    )
-    current_version = versions_el.get("currentVersion", "")
-    versions: dict[str, ClipVersion] = {}
-
-    for i, version_el in enumerate(versions_el.findall("version")):
-        if i >= MAX_VERSIONS:
-            raise RuntimeError(f"Version count exceeds MAX_VERSIONS={MAX_VERSIONS}")
-        uid = version_el.get("uid") or ""
-        if not uid:
-            raise ValueError(f"Version at index {i} is missing 'uid' attribute")
-        name_el = version_el.find("name")
-        name = (name_el.text or uid).strip() if name_el is not None else uid
-        feeds_el = _require(version_el, "feeds")
-        feed = _require(feeds_el, "feed")
-        spans = _parse_spans(feed, uid)
-        versions[uid] = ClipVersion(uid=uid, name=name, spans=spans)
-
-    return ParsedClip(
-        schema_version="9",
+        schema_version=schema_version,
         clip_name=clip_name,
         current_version=current_version,
         versions=versions,
@@ -351,10 +350,14 @@ def _parse_spans(feed: etree._Element, version_uid: str) -> list[ClipSpan]:
                 start_frame=int(start_el.text or 0),
                 duration=int(dur_el.text or 0),
             ))
-        else:
+        elif _RANGE_RE.search(raw_path):
             # Standard: range encoded in path as file.[000001-000100].exr
             path, start_frame, duration = _parse_range_path(raw_path, version_uid)
             spans.append(ClipSpan(path=path, start_frame=start_frame, duration=duration))
+        else:
+            # Static single image (Flame encoding="file", e.g. a still or screenshot):
+            # no sequence, so there is no frame range to parse.
+            spans.append(ClipSpan(path=raw_path, start_frame=1, duration=1))
 
     return spans
 

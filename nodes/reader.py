@@ -28,8 +28,8 @@ class OpenClipReader:
             }
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK", "INT", "INT", "INT", "STRING", "INT", "STRING", "STRING", "CLIP_METADATA")
-    RETURN_NAMES = ("IMAGE", "MASK", "frame_count", "width", "height", "clip_version", "start_frame", "clip_path", "clip_name", "metadata")
+    RETURN_TYPES = ("IMAGE", "MASK", "INT", "INT", "INT", "STRING", "INT", "STRING", "STRING", "CLIP_METADATA", "FLOAT")
+    RETURN_NAMES = ("IMAGE", "MASK", "frame_count", "width", "height", "format_version", "start_frame", "clip_path", "clip_name", "metadata", "fps")
     FUNCTION = "execute"
     CATEGORY = "OpenClip"
 
@@ -49,6 +49,8 @@ class OpenClipReader:
 
         parsed = openclip_xml.parse(clip_path)
         clip_version = openclip_xml.resolve_version(parsed, version)
+        fps_num, fps_den = openclip_xml.fps_to_rational(openclip_xml.read_format(clip_path).fps)
+        fps = fps_num / fps_den
 
         if not clip_version.spans:
             raise ValueError(f"Version '{version}' has no spans")
@@ -75,7 +77,7 @@ class OpenClipReader:
         frame_count, height, width = images.shape[0], images.shape[1], images.shape[2]
         return (
             images, masks, frame_count, width, height, parsed.schema_version,
-            resolved_start, clip_path, parsed.clip_name, metadata,
+            resolved_start, clip_path, parsed.clip_name, metadata, fps,
         )
 
 

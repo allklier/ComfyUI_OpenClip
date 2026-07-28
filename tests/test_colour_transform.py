@@ -7,8 +7,8 @@ import torch
 
 pytest.importorskip("PyOpenColorIO")
 
-from ComfyOpenClip.lib.colour_transform import apply_colour_transform, OUTPUT_COLOUR_SPACE
-from ComfyOpenClip.nodes.colour_transform import (
+from ComfyUI_OpenClip.lib.colour_transform import apply_colour_transform, OUTPUT_COLOUR_SPACE
+from ComfyUI_OpenClip.nodes.colour_transform import (
     OpenClipColourTransform,
     _default_ocio_config,
     _pick_most_recent_flame_config,
@@ -56,7 +56,7 @@ def test_default_ocio_uses_env_var(monkeypatch):
 
 def test_default_ocio_env_var_beats_flame_install(monkeypatch):
     monkeypatch.setenv("OCIO", "/custom/config.ocio")
-    import ComfyOpenClip.nodes.colour_transform as ct_mod
+    import ComfyUI_OpenClip.nodes.colour_transform as ct_mod
     monkeypatch.setattr(ct_mod.glob, "glob", lambda _: [
         "/opt/Autodesk/colour_mgmt/flame_configs/2025.1/aces2.0_config/config.ocio"
     ])

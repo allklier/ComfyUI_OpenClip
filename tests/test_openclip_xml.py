@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 from lxml import etree
 
-from ComfyOpenClip.lib import openclip_xml
-from ComfyOpenClip.lib.openclip_xml import ClipSpan, ClipVersion, ParsedClip
+from ComfyUI_OpenClip.lib import openclip_xml
+from ComfyUI_OpenClip.lib.openclip_xml import ClipSpan, ClipVersion, ParsedClip
 
 
 # --- parse tests ---
@@ -38,6 +38,40 @@ def test_parse_v9_single_version(v9_single_clip):
     span = clip.versions["v001"].spans[0]
     assert span.start_frame == 1001
     assert span.duration == 4
+
+
+def test_parse_static_image_span(tmp_path):
+    # Flame writes a single still (no sequence) with encoding="file" and no
+    # [NNNN-NNNN] range in the path — confirmed from a real exported clip.
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<clip type="clip" version="7">
+  <name type="string">still_shot</name>
+  <tracks>
+    <track uid="abc">
+      <feeds currentVersion="v0">
+        <feed vuid="v0" uid="def">
+          <storageFormat type="format"><type>video</type></storageFormat>
+          <spans>
+            <span>
+              <path encoding="file">media/still_shot.png</path>
+            </span>
+          </spans>
+        </feed>
+      </feeds>
+    </track>
+  </tracks>
+  <versions currentVersion="v0">
+    <version uid="v0"><name>v0</name></version>
+  </versions>
+</clip>
+"""
+    clip_file = tmp_path / "still_shot.clip"
+    clip_file.write_text(xml)
+    parsed = openclip_xml.parse(str(clip_file))
+    span = parsed.versions["v0"].spans[0]
+    assert span.path == "media/still_shot.png"
+    assert span.start_frame == 1
+    assert span.duration == 1
 
 
 def test_parse_missing_file():
@@ -165,7 +199,7 @@ def test_generate_publish_round_trips_through_parse(tmp_path):
 
 
 def test_generate_colour_space_written():
-    from ComfyOpenClip.lib.openclip_xml import ClipFormat
+    from ComfyUI_OpenClip.lib.openclip_xml import ClipFormat
     clip_name, versions, current = _make_clip()
     fmt = ClipFormat(colour_space="ACEScg")
     xml_bytes = openclip_xml.generate(clip_name, versions, current, fmt)
@@ -185,7 +219,7 @@ def test_generate_colour_space_default():
 
 
 def test_generate_colour_space_empty_omits_element():
-    from ComfyOpenClip.lib.openclip_xml import ClipFormat
+    from ComfyUI_OpenClip.lib.openclip_xml import ClipFormat
     clip_name, versions, current = _make_clip()
     fmt = ClipFormat(colour_space="")
     xml_bytes = openclip_xml.generate(clip_name, versions, current, fmt)
@@ -194,7 +228,7 @@ def test_generate_colour_space_empty_omits_element():
 
 
 def test_generate_file_format_and_compression_in_storage_format():
-    from ComfyOpenClip.lib.openclip_xml import ClipFormat
+    from ComfyUI_OpenClip.lib.openclip_xml import ClipFormat
     clip_name, versions, current = _make_clip()
     fmt = ClipFormat(file_format="EXR", compression="PIZ")
     xml_bytes = openclip_xml.generate(clip_name, versions, current, fmt)
@@ -204,7 +238,7 @@ def test_generate_file_format_and_compression_in_storage_format():
 
 
 def test_generate_png_omits_compression():
-    from ComfyOpenClip.lib.openclip_xml import ClipFormat
+    from ComfyUI_OpenClip.lib.openclip_xml import ClipFormat
     clip_name, versions, current = _make_clip()
     fmt = ClipFormat(file_format="PNG", compression="ZIP")
     xml_bytes = openclip_xml.generate(clip_name, versions, current, fmt)
@@ -225,7 +259,7 @@ def test_generate_start_frame_on_feed_and_duration_in_span():
 
 
 def test_generate_edit_rate_is_scalar():
-    from ComfyOpenClip.lib.openclip_xml import ClipFormat
+    from ComfyUI_OpenClip.lib.openclip_xml import ClipFormat
     clip_name, versions, current = _make_clip()
     fmt = ClipFormat(fps="25")
     xml_bytes = openclip_xml.generate(clip_name, versions, current, fmt)
@@ -233,6 +267,28 @@ def test_generate_edit_rate_is_scalar():
     er = root.find(".//editRate")
     assert er.text == "25"
     assert er.find("numerator") is None
+
+
+# --- fps_label_from_float ---
+
+
+def test_fps_label_from_float_exact_integer_rate():
+    assert openclip_xml.fps_label_from_float(25.0) == "25"
+
+
+def test_fps_label_from_float_matches_ntsc_decimal_approximation():
+    # 23.976 is a decimal approximation of the exact rational 24000/1001;
+    # it must still resolve to the "23.976" label, not fail or match "24".
+    assert openclip_xml.fps_label_from_float(23.976) == "23.976"
+
+
+def test_fps_label_from_float_matches_exact_rational():
+    assert openclip_xml.fps_label_from_float(24000 / 1001) == "23.976"
+
+
+def test_fps_label_from_float_out_of_tolerance_raises():
+    with pytest.raises(ValueError, match="26.5"):
+        openclip_xml.fps_label_from_float(26.5)
 
 
 def test_generate_version_number_in_userData():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Optional
 
 import numpy as np
@@ -8,6 +9,9 @@ import OpenImageIO as oiio
 import torch
 
 MAX_FRAMES = 100_000
+
+# Matches a printf-style frame specifier such as %04d or %d.
+_FRAME_TOKEN_RE = re.compile(r'%\d*d')
 
 _OIIO_BIT_DEPTHS: dict[str, oiio.TypeDesc] = {
     "half (16-bit)": oiio.HALF,
@@ -53,7 +57,7 @@ def read_sequence(
 
     for i in range(n_frames):
         frame_num = start_frame + i
-        filepath = path_pattern % frame_num
+        filepath = path_pattern % frame_num if _FRAME_TOKEN_RE.search(path_pattern) else path_pattern
         image, mask, frame_meta = _read_frame(filepath, load_alpha)
         images.append(image)
         masks.append(mask)

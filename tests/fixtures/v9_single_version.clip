@@ -1,27 +1,25 @@
 <?xml version='1.0' encoding='UTF-8'?>
-<clip version="9">
-  <name>test_clip_v9</name>
+<clip type="clip" version="9">
+  <name type="string">test_clip_v9</name>
   <tracks>
-    <track>
-      <versions currentVersion="v001">
-        <version uid="v001">
-          <name>v001</name>
-          <feeds>
-            <feed>
-              <storageFormat>
-                <type>video</type>
-              </storageFormat>
-              <spans>
-                <span>
-                  <path>media/test_clip_v9.%04d.exr</path>
-                  <startFrame>1001</startFrame>
-                  <duration>4</duration>
-                </span>
-              </spans>
-            </feed>
-          </feeds>
-        </version>
-      </versions>
+    <track uid="aabbccdd">
+      <feeds currentVersion="v001">
+        <feed vuid="v001" uid="11223344">
+          <storageFormat type="format">
+            <type>video</type>
+          </storageFormat>
+          <spans>
+            <span>
+              <path encoding="pattern">media/test_clip_v9.[001001-001004].exr</path>
+            </span>
+          </spans>
+        </feed>
+      </feeds>
     </track>
   </tracks>
+  <versions currentVersion="v001">
+    <version uid="v001">
+      <name>v001</name>
+    </version>
+  </versions>
 </clip>

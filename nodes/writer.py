@@ -19,9 +19,10 @@ class OpenClipWriter:
                 "IMAGE": ("IMAGE",),
                 "clip_path": ("STRING", {"default": ""}),
                 "clip_name": ("STRING", {"default": ""}),
-                "clip_filename": ("STRING", {"default": "$path/$clip_name.clip"}),
+                "clip_filename": ("STRING", {"default": "$(path)/$(clip_name).clip"}),
                 "version_name": ("STRING", {"default": "v001"}),
-                "fps": (openclip_xml.FPS_OPTIONS, {"default": "24"}),
+                "include_version_in_filename": ("BOOLEAN", {"default": False}),
+                "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 120.0, "step": 0.001}),
                 "start_frame": ("INT", {"default": 1001, "min": 0, "max": 999999}),
                 "frame_padding": ("INT", {"default": 4, "min": 1, "max": 9}),
                 "file_format": (["EXR", "PNG"],),
@@ -52,7 +53,7 @@ class OpenClipWriter:
         clip_name: str,
         clip_filename: str,
         version_name: str,
-        fps: str,
+        fps: float,
         start_frame: int,
         frame_padding: int,
         file_format: str,
@@ -61,6 +62,7 @@ class OpenClipWriter:
         colour_space: str = "Rec.1886 Rec.709 - Display",
         layout: str = "Standard Flame",
         publish: bool = False,
+        include_version_in_filename: bool = False,
         MASK: Optional[torch.Tensor] = None,
         CLIP_METADATA: Optional[dict] = None,
         extra_pnginfo: Optional[dict] = None,
@@ -75,20 +77,24 @@ class OpenClipWriter:
         )
         package_layout.create_dirs(paths)
 
-        abs_pattern = str(paths.media_dir / f"{clip_name}.%0{frame_padding}d.{file_format.lower()}")
+        frame_stem = f"{clip_name}.{version_name}" if include_version_in_filename else clip_name
+        abs_pattern = str(paths.media_dir / f"{frame_stem}.%0{frame_padding}d.{file_format.lower()}")
         image_io.write_sequence(
             abs_pattern, IMAGE, MASK, start_frame, file_format, exr_bit_depth, exr_compression,
             metadata=CLIP_METADATA,
         )
 
         n_frames, height, width = IMAGE.shape[0], IMAGE.shape[1], IMAGE.shape[2]
+        print(f"[OpenClipWriter] First frame written: {abs_pattern % start_frame}")
+        print(f"[OpenClipWriter] Wrote {n_frames} {file_format} file(s) to {paths.media_dir}")
         n_channels = 4 if MASK is not None else 3
+        fps_label = openclip_xml.fps_label_from_float(fps)
         fmt = ClipFormat(
             width=width,
             height=height,
             n_channels=n_channels,
             bit_depth=exr_bit_depth,
-            fps=fps,
+            fps=fps_label,
             colour_space=colour_space,
             file_format=file_format,
             compression=exr_compression,
@@ -107,6 +113,7 @@ class OpenClipWriter:
         else:
             xml_bytes = openclip_xml.generate(clip_name, {version_name: new_version}, version_name, fmt)
         paths.clip_file.write_bytes(xml_bytes)
+        print(f"[OpenClipWriter] Wrote clip file: {paths.clip_file}")
 
         return (str(paths.clip_file),)
 
@@ -149,13 +156,16 @@ def _format_mismatches(
 
 
 def _resolve_destination(clip_path_in: str, clip_name_in: str, clip_filename: str) -> tuple[str, str]:
-    """Expand $path/$clip_name tokens in clip_filename, then split into (output_dir, clip_name).
+    """Expand $(path)/$(clip_name) tokens in clip_filename, then split into (output_dir, clip_name).
 
-    $path  → clip_path_in, normalised to a folder (parent dir if a .clip file was supplied).
-    $clip_name → clip_name_in.
+    $(path)      → clip_path_in, normalised to a folder (parent dir if a .clip file was supplied).
+    $(clip_name) → clip_name_in.
+
+    Tokens use explicit parentheses so adjacent literal text (e.g. $(clip_name)_clean)
+    is never mistaken for part of the token name.
 
     The expanded result is normalised (resolves ..) and split on the last component.
-    The caller can use $path/../sibling/$clip_name to navigate relative to the source clip.
+    The caller can use $(path)/../sibling/$(clip_name) to navigate relative to the source clip.
     """
     if not clip_filename:
         raise ValueError("clip_filename is required")
@@ -163,15 +173,15 @@ def _resolve_destination(clip_path_in: str, clip_name_in: str, clip_filename: st
     folder = _normalize_to_folder(clip_path_in)
     expanded = clip_filename
 
-    if "$path" in expanded:
+    if "$(path)" in expanded:
         if not folder:
-            raise ValueError("clip_path is required when clip_filename contains $path")
-        expanded = expanded.replace("$path", folder)
+            raise ValueError("clip_path is required when clip_filename contains $(path)")
+        expanded = expanded.replace("$(path)", folder)
 
-    if "$clip_name" in expanded:
+    if "$(clip_name)" in expanded:
         if not clip_name_in:
-            raise ValueError("clip_name is required when clip_filename contains $clip_name")
-        expanded = expanded.replace("$clip_name", clip_name_in)
+            raise ValueError("clip_name is required when clip_filename contains $(clip_name)")
+        expanded = expanded.replace("$(clip_name)", clip_name_in)
 
     # Collapse any .. segments without requiring the path to exist yet.
     expanded = os.path.normpath(expanded)
