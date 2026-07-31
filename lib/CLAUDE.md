@@ -9,6 +9,7 @@ Business logic lives here. The three modules map to the three responsibilities: 
 | `openclip_xml.py` | Parse and generate `.clip` XML for v8 and v9 |
 | `image_io.py` | Read/write EXR and PNG sequences via OIIO |
 | `package_layout.py` | Resolve and build the on-disk package directory tree |
+| `colour_transform.py` | Apply an OCIO Display/View transform to an `IMAGE` tensor |
 
 ---
 
@@ -144,3 +145,13 @@ Path tokens in the XML are always relative to the `.clip` file, so both layouts 
 ```
 
 The path is stored in `ClipVersion.publish_path` (relative to the `.clip` file's directory). Versions written without publish have `publish_path = None` and no `<comfyWorkflow>` element. The parser reads `<comfyWorkflow>` back so multi-version merges preserve existing publish references.
+
+---
+
+## Colour Transforms — `colour_transform.py`
+
+`apply_colour_transform()` builds an `ocio.DisplayViewTransform` (`src=input_space`, `display=output_space`, `view=view`) rather than calling `config.getProcessor(input_space, output_space)` directly between two colour spaces.
+
+This distinction matters specifically because `output_space` (default `"Rec.1886 Rec.709 - Display"`) is a **display-referred** colour space. In an OCIO v2 / ACES config, a display colour space's own `colorspaces:`/`display_colorspaces:` definition is *encoding only* (EOTF + primaries) — it has no tone-mapping or gamut compression baked in. The actual ACES Output Transform (what Flame calls a "view transform": filmic highlight roll-off, gamut compression back into the display volume) lives on the **View**, which is a separate `ViewTransform` object composed with the display only when you go through `DisplayViewTransform`. Calling `getProcessor(scene_referred_space, display_space)` directly skips the view entirely and just re-encodes scene-linear values straight into the display's gamma/primaries — bright or saturated pixels end up negative or above `1.0` instead of being compressed into range. Confirmed against the Academy's public reference ACES 2.0 config (which Flame's `aces2.0_config` ships unmodified): a saturated red at `(2.0, 0.05, 0.05)` in ACEScg comes out as `(1.66, -0.52, 0.09)` via the plain-`getProcessor` path vs. `(1.00, 0.28, 0.31)` via `DisplayViewTransform` with the `"ACES 2.0 - SDR 100 nits (Rec.709)"` view.
+
+`tests/fixtures/test_ocio.ocio` mirrors this Display/View split with a minimal stand-in: a `"Raw"` view (identity passthrough, no view transform — proves the pipe-through path works) and an `"ACES 2.0 - SDR 100 nits (Rec.709)"` view whose `ViewTransform` halves scene-referred values (a stand-in for real tone-mapping — proves the view transform is actually being applied, not skipped).

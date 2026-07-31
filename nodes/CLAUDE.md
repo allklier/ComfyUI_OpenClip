@@ -6,17 +6,21 @@ Each file in this directory defines one ComfyUI node class. Nodes are thin: they
 
 ### `OpenClipReader` — `reader.py`
 
-Reads an OpenClip `.clip` XML package and outputs image tensors frame by frame (or as a batch).
+Reads an OpenClip `.clip` XML package and outputs image tensors frame by frame (or as a batch). Also owns version selection/browsing — the former standalone `OpenClipVersionSelector` node was folded into the Reader (see **Implementation notes** below).
+
+**Implementation notes:**
+- `OUTPUT_NODE = True` so ComfyUI executes the Reader even when nothing downstream is connected — lets an artist queue-prompt the Reader in isolation just to browse a clip's versions, the way `OpenClipVersionSelector` used to work standalone.
+- `version` accepts `"current"` (default) or an explicit typed version name (e.g. `v002`); an invalid name raises `ValueError` listing the valid ones (`openclip_xml.resolve_version`).
+- The `available_versions` list is pushed into a read-only multiline widget on the node itself at execute time via `web/openclip_reader.js`, which listens for the node's `onExecuted` callback and writes the text into a `ComfyWidgets["STRING"]` widget (`serialize: false`, so it's never sent back to Python as an input). This is a different, more standard mechanism than the `widget.draw`/`mouse` override + custom button approach that broke `OpenClipVersionSelector` under a ComfyUI frontend rewrite (see git history), but it is still custom JS and carries some of the same forward-compat risk. The `available_versions` **output** is the guaranteed fallback if the JS ever stops populating the widget — wire it into any text-preview node.
 
 **Inputs**
 
 | Name | Type | Description |
 |---|---|---|
 | `clip_path` | `STRING` | Path to a `.clip` file. Absolute paths are used as-is; relative paths resolve against ComfyUI's `input/` directory. |
-| `version` | `STRING` | Version name to load (e.g. `v001`); `"current"` reads `currentVersion` attribute |
+| `version` | `STRING` | Version name to load (e.g. `v001`); `"current"` reads `currentVersion` attribute. Type any name shown in the in-node version list to switch versions. |
 | `start_frame` | `INT` | First frame to load |
 | `end_frame` | `INT` | Last frame to load; `-1` = all frames |
-| `load_alpha` | `BOOLEAN` | If true, split RGBA EXR into IMAGE + MASK outputs |
 | `path_from` | `STRING` | Path prefix to replace in media paths from the XML (e.g. `/Volumes/LocalJobs`). Leave empty to let the reader auto-detect the remap. |
 | `path_to` | `STRING` | Replacement prefix (e.g. `/mnt/LocalJobs`). Only applied when `path_from` is non-empty and matches. Ignored when auto-remap is active. |
 
@@ -25,16 +29,29 @@ Reads an OpenClip `.clip` XML package and outputs image tensors frame by frame (
 | Name | Type | Description |
 |---|---|---|
 | `IMAGE` | `IMAGE` | RGB tensor batch `(N, H, W, 3)` |
-| `MASK` | `MASK` | Alpha tensor batch `(N, H, W)` — zeros if no alpha in source |
+| `MASK` | `MASK` | Alpha tensor batch `(N, H, W)`, loaded automatically when the source has a 4th channel — zeros if no alpha in source |
 | `frame_count` | `INT` | Number of frames loaded |
 | `width` | `INT` | Frame width in pixels |
 | `height` | `INT` | Frame height in pixels |
-| `format_version` | `STRING` | OpenClip schema version detected (`"8"` or `"9"`) — the `version="…"` attribute on the root `<clip>` element, **not** a feed/version name like `v002`. Renamed from `clip_version` to avoid confusion with `OpenClipVersionSelector`'s `selected_version`/`current_version` outputs. |
+| `format_version` | `STRING` | OpenClip schema version detected (`"8"` or `"9"`) — the `version="…"` attribute on the root `<clip>` element, **not** a feed/version name like `v002`. |
+| `version_name` | `STRING` | The **resolved** feed version actually loaded, e.g. `v002` — never the literal `"current"`, even when the `version` input was `"current"`. Wire into Writer's `version_name` if the Writer should follow the Reader's version numbering. |
 | `start_frame` | `INT` | Actual first frame number used (resolved from span or explicit input) |
 | `clip_path` | `STRING` | Pass-through of the resolved input clip path — wire into Writer's `clip_path` |
 | `clip_name` | `STRING` | Clip name from the XML `<name>` element — wire into Writer's `clip_name` |
 | `metadata` | `CLIP_METADATA` | Dict of EXR header attributes from the first frame — wire into Writer's `CLIP_METADATA` |
 | `fps` | `FLOAT` | Frame rate read from the clip's `<editRate>` (one value per clip, shared by every version), as the exact rational value — e.g. the `23.976` label is really `24000/1001`, output as `23.976023976023978`, not the rounded decimal. Wire into Writer's `fps` to preserve it on round-trip. |
+| `available_versions` | `STRING` | Newline-separated list of every version name in the clip, sorted, with `  (current)` appended to the one matching `currentVersion`. Also displayed live in-node via `web/openclip_reader.js`; this output is the no-JS fallback — wire it to any text-preview node if the in-node widget doesn't populate. |
+
+**Typical wiring — full read → process → write round-trip:**
+```
+OpenClipReader.start_frame   → OpenClipWriter.start_frame   (preserves frame numbering)
+OpenClipReader.clip_path     → OpenClipWriter.clip_path     (same destination folder)
+OpenClipReader.clip_name     → OpenClipWriter.clip_name     (same clip name)
+OpenClipReader.metadata      → OpenClipWriter.CLIP_METADATA (carry EXR header attrs)
+OpenClipReader.fps           → OpenClipWriter.fps           (preserve frame rate)
+OpenClipReader.version_name  → OpenClipWriter.version_name  (optional: Writer follows Reader's version numbering)
+# Writer clip_filename stays at default "$(path)/$(clip_name)"
+```
 
 ---
 
@@ -73,44 +90,25 @@ OpenClip XML is always written as version 8 (v9 is not yet released by Autodesk)
 
 ---
 
-### `OpenClipVersionSelector` — `version_selector.py`
+### `OpenClipColourTransform` — `colour_transform.py`
 
-Inspects a `.clip` file and lets an artist pick a version interactively. Intended to be wired upstream of `OpenClipReader`.
-
-**Implementation notes:**
-- `selected_version` is a `STRING` (not `COMBO`) — `COMBO` caused ComfyUI backend validation to reject submitted values that weren't in the static INPUT_TYPES list.
-- There is **no custom JS** for this node. An earlier design used a JS "↻ Refresh & Check" button (litegraph `node.addWidget("button", ...)`) that called `/openclip/versions` and painted a read-only `latest_version` widget via `widget.draw`/`widget.mouse` overrides. That stopped working under a newer ComfyUI node-canvas frontend (clicking the button did nothing) — those overrides depend on litegraph's internal per-widget draw/mouse contract, which a canvas rewrite isn't obligated to preserve. Removed in favour of a pure Python `available_versions` output computed on execute, which has no dependency on frontend widget internals — wire it to any text-preview node to see the list.
-- An empty `selected_version` silently falls back to `currentVersion` in Python.
+Applies an OCIO Display/View transform (i.e. a real "view transform" like Flame's, not a bare colour-space-to-colour-space conversion) to an `IMAGE` tensor. See `lib/CLAUDE.md` for why this distinction matters.
 
 **Inputs**
 
 | Name | Type | Description |
 |---|---|---|
-| `clip_path` | `STRING` | Path to a `.clip` file. Absolute paths are used as-is; relative paths resolve against ComfyUI's `input/` directory. |
-| `selected_version` | `STRING` | Editable field for the desired version name (e.g. `v002`). Empty → uses `currentVersion`. |
+| `IMAGE` | `IMAGE` | RGB tensor batch |
+| `ocio_config` | `STRING` | Path to an `.ocio` config file. Defaults to `$OCIO` if set, else the most recent Flame install's `aces2.0_config` under `/opt/Autodesk/colour_mgmt/` (`_default_ocio_config()`). |
+| `input_colour_space` | `STRING` | Source colour space name as registered in the config, e.g. `Log3G10 RedWideGamutRGB` |
+| `view` | `STRING` | View transform name for the output display, e.g. `ACES 2.0 - SDR 100 nits (Rec.709)` (default). Matches Flame's per-clip view-transform picker; other values the config exposes (`Un-tone-mapped`, HDR views, etc.) work too. |
+| `MASK` | `MASK` (optional) | Passed through unchanged; zero-filled if not connected |
 
 **Outputs**
 
 | Name | Type | Description |
 |---|---|---|
-| `clip_path` | `STRING` | Pass-through of the input path (for chaining directly into Reader) |
-| `selected_version` | `STRING` | The version chosen (or `currentVersion` if input was empty) |
-| `current_version` | `STRING` | The version marked as `currentVersion` in the XML |
-| `available_versions` | `STRING` | Newline-separated list of every version name in the clip, sorted, with `  (current)` appended to the one matching `currentVersion`. Wire into a text-preview node so an artist can see valid values before typing `selected_version`. |
+| `IMAGE` | `IMAGE` | Transformed RGB tensor batch |
+| `MASK` | `MASK` | Pass-through of the input `MASK` |
 
-**Typical wiring — version selection into Reader:**
-```
-OpenClipVersionSelector.clip_path        → OpenClipReader.clip_path
-OpenClipVersionSelector.selected_version → OpenClipReader.version
-```
-
-**Typical wiring — full read → process → write round-trip:**
-```
-OpenClipReader.start_frame → OpenClipWriter.start_frame   (preserves frame numbering)
-OpenClipReader.clip_path   → OpenClipWriter.clip_path     (same destination folder)
-OpenClipReader.clip_name   → OpenClipWriter.clip_name     (same clip name)
-OpenClipReader.metadata    → OpenClipWriter.CLIP_METADATA (carry EXR header attrs)
-OpenClipReader.fps         → OpenClipWriter.fps           (preserve frame rate)
-# Writer clip_filename stays at default "$(path)/$(clip_name)"
-# Change version_name on the Writer to add a new version to the same clip
-```
+---

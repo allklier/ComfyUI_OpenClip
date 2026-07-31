@@ -47,6 +47,7 @@ class OpenClipColourTransform:
                 "IMAGE": ("IMAGE",),
                 "ocio_config": ("STRING", {"default": _default_ocio_config()}),
                 "input_colour_space": ("STRING", {"default": ""}),
+                "view": ("STRING", {"default": _ct.OUTPUT_VIEW}),
             },
             "optional": {
                 "MASK": ("MASK",),
@@ -63,16 +64,20 @@ class OpenClipColourTransform:
         IMAGE: torch.Tensor,
         ocio_config: str,
         input_colour_space: str,
+        view: str,
         MASK: Optional[torch.Tensor] = None,
     ) -> tuple:
         ocio_config = ocio_config.strip()
         input_colour_space = input_colour_space.strip()
+        view = view.strip()
         if not ocio_config:
             raise ValueError("ocio_config path is required")
         if not input_colour_space:
             raise ValueError("input_colour_space is required")
+        if not view:
+            raise ValueError("view is required")
 
-        output = _ct.apply_colour_transform(IMAGE, ocio_config, input_colour_space)
+        output = _ct.apply_colour_transform(IMAGE, ocio_config, input_colour_space, view=view)
         out_mask = MASK if MASK is not None else torch.zeros(
             IMAGE.shape[0], IMAGE.shape[1], IMAGE.shape[2]
         )

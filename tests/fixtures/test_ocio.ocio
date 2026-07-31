@@ -1,29 +1,60 @@
 ocio_profile_version: 2
 
+environment:
+  {}
+search_path: ""
+strictparsing: true
+luma: [0.2126, 0.7152, 0.0722]
 description: Minimal config for ComfyOpenClip tests
 
 roles:
   default: linear
+  scene_linear: linear
+
+file_rules:
+  - !<Rule> {name: Default, colorspace: default}
+
+displays:
+  Rec.1886 Rec.709 - Display:
+    - !<View> {name: ACES 2.0 - SDR 100 nits (Rec.709), view_transform: ACES 2.0 - SDR 100 nits (Rec.709), display_colorspace: Rec.1886 Rec.709 - Display}
+    - !<View> {name: Raw, colorspace: linear}
+
+active_displays: [Rec.1886 Rec.709 - Display]
+active_views: [ACES 2.0 - SDR 100 nits (Rec.709), Raw]
+
+view_transforms:
+  - !<ViewTransform>
+    name: ACES 2.0 - SDR 100 nits (Rec.709)
+    description: Test stand-in view transform - halves values to simulate tone-mapping
+    from_scene_reference: !<MatrixTransform> {matrix: [0.5, 0, 0, 0, 0, 0.5, 0, 0, 0, 0, 0.5, 0, 0, 0, 0, 1]}
+
+display_colorspaces:
+  - !<ColorSpace>
+    name: Rec.1886 Rec.709 - Display
+    family: ""
+    equalitygroup: ""
+    bitdepth: unknown
+    description: Identity display encoding (test stand-in for the real display space)
+    isdata: false
+    allocation: uniform
+    from_display_reference: !<MatrixTransform> {}
 
 colorspaces:
   - !<ColorSpace>
     name: linear
+    family: ""
+    equalitygroup: ""
+    bitdepth: unknown
     description: Scene-linear reference
     isdata: false
     allocation: uniform
 
   - !<ColorSpace>
-    name: Rec.1886 Rec.709 - Display
-    description: Identity from linear (test stand-in for the real display space)
-    isdata: false
-    allocation: uniform
-    from_scene_reference: !<MatrixTransform>
-      matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
-
-  - !<ColorSpace>
     name: scaled_2x
+    family: ""
+    equalitygroup: ""
+    bitdepth: unknown
     description: Input space where 1 unit = 2 units in scene reference (for testing)
     isdata: false
     allocation: uniform
-    to_scene_reference: !<MatrixTransform>
-      matrix: [2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1]
+    to_scene_reference: !<MatrixTransform> {matrix: [2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1]}

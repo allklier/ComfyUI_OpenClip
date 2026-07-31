@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,6 @@ import torch
 from ComfyUI_OpenClip.lib import image_io, openclip_xml, package_layout
 from ComfyUI_OpenClip.lib.openclip_xml import ClipSpan, ClipVersion
 from ComfyUI_OpenClip.nodes.reader import OpenClipReader
-from ComfyUI_OpenClip.nodes.version_selector import OpenClipVersionSelector
 from ComfyUI_OpenClip.nodes.writer import OpenClipWriter
 
 
@@ -55,11 +55,11 @@ def _clip_with_seq(tmp_path: Path, clip_name: str, version: str, n_frames: int =
 def test_read_v8_clip_end_to_end(tmp_path):
     clip_path, original = _clip_with_seq(tmp_path, "sh010", "v001")
     reader = OpenClipReader()
-    images, masks, frame_count, width, height, format_version, *_, fps = reader.execute(
+    images, masks, frame_count, width, height, format_version, *_, fps, _available_versions = reader.execute(
         clip_path=clip_path, version="current",
-        start_frame=-1, end_frame=-1, load_alpha=False,
+        start_frame=-1, end_frame=-1,
         path_from="", path_to="",
-    )
+    )["result"]
     assert images.shape == (4, 64, 64, 3)
     assert frame_count == 4
     assert width == 64
@@ -73,9 +73,9 @@ def test_read_explicit_version(tmp_path):
     reader = OpenClipReader()
     images, *_ = reader.execute(
         clip_path=clip_path, version="v001",
-        start_frame=-1, end_frame=-1, load_alpha=False,
+        start_frame=-1, end_frame=-1,
         path_from="", path_to="",
-    )
+    )["result"]
     assert images.shape[0] == 4
 
 
@@ -84,8 +84,30 @@ def test_read_missing_version_raises(tmp_path):
     reader = OpenClipReader()
     with pytest.raises(ValueError, match="v999"):
         reader.execute(clip_path=clip_path, version="v999",
-                       start_frame=-1, end_frame=-1, load_alpha=False,
+                       start_frame=-1, end_frame=-1,
                        path_from="", path_to="")
+
+
+def test_reader_is_changed_stable_when_unchanged(tmp_path):
+    clip_path, _ = _clip_with_seq(tmp_path, "sh010", "v001")
+    kwargs = dict(clip_path=clip_path, version="current",
+                  start_frame=-1, end_frame=-1, path_from="", path_to="")
+    assert OpenClipReader.IS_CHANGED(**kwargs) == OpenClipReader.IS_CHANGED(**kwargs)
+
+
+def test_reader_is_changed_detects_rerender(tmp_path):
+    clip_path, _ = _clip_with_seq(tmp_path, "sh010", "v001")
+    kwargs = dict(clip_path=clip_path, version="current",
+                  start_frame=-1, end_frame=-1, path_from="", path_to="")
+    sig_before = OpenClipReader.IS_CHANGED(**kwargs)
+
+    first_frame = Path(clip_path).parent / "versions" / "v001" / "sh010.1001.exr"
+    stat_before = first_frame.stat()
+    # Force a distinct mtime regardless of filesystem timestamp granularity,
+    # simulating a re-render that overwrites the frame in place.
+    os.utime(first_frame, ns=(stat_before.st_atime_ns, stat_before.st_mtime_ns + 1_000_000_000))
+
+    assert OpenClipReader.IS_CHANGED(**kwargs) != sig_before
 
 
 def test_read_auto_remap(tmp_path):
@@ -117,9 +139,9 @@ def test_read_auto_remap(tmp_path):
     reader = OpenClipReader()
     images, _, frame_count, *_ = reader.execute(
         clip_path=str(clip_file), version="current",
-        start_frame=-1, end_frame=-1, load_alpha=False,
+        start_frame=-1, end_frame=-1,
         path_from="", path_to="",
-    )
+    )["result"]
     assert frame_count == 4
     assert torch.allclose(images, images_orig, atol=1e-3)
 
@@ -243,9 +265,9 @@ def test_round_trip_rgb(tmp_path):
     reader = OpenClipReader()
     images, _, frame_count, *_ = reader.execute(
         clip_path=clip_path, version="current",
-        start_frame=-1, end_frame=-1, load_alpha=False,
+        start_frame=-1, end_frame=-1,
         path_from="", path_to="",
-    )
+    )["result"]
     assert frame_count == 4
     # float32 EXR should round-trip without loss
     assert torch.allclose(images, original, atol=1e-4)
@@ -266,9 +288,9 @@ def test_round_trip_rgba(tmp_path):
     reader = OpenClipReader()
     images, masks, *_ = reader.execute(
         clip_path=clip_path, version="current",
-        start_frame=-1, end_frame=-1, load_alpha=True,
+        start_frame=-1, end_frame=-1,
         path_from="", path_to="",
-    )
+    )["result"]
     assert torch.allclose(images, original_img, atol=1e-4)
     assert torch.allclose(masks, original_mask, atol=1e-4)
 
@@ -287,11 +309,11 @@ def test_round_trip_preserves_fps(tmp_path):
         layout="Standard Flame", publish=False,
     )
     reader = OpenClipReader()
-    *_, fps = reader.execute(
+    *_, fps, _available_versions = reader.execute(
         clip_path=clip_path, version="current",
-        start_frame=-1, end_frame=-1, load_alpha=False,
+        start_frame=-1, end_frame=-1,
         path_from="", path_to="",
-    )
+    )["result"]
     assert fps == pytest.approx(24000 / 1001)
 
 
@@ -324,9 +346,9 @@ def test_write_second_version_adds_to_clip(tmp_path):
     reader = OpenClipReader()
     images, *_ = reader.execute(
         clip_path=clip_v2, version="v002",
-        start_frame=-1, end_frame=-1, load_alpha=False,
+        start_frame=-1, end_frame=-1,
         path_from="", path_to="",
-    )
+    )["result"]
     assert torch.allclose(images, images_v2, atol=1e-4)
 
 
@@ -392,33 +414,44 @@ def test_exr_compression_variants_round_trip(tmp_path):
         assert read.shape == (1, 64, 64, 3)
 
 
-# --- VersionSelector ---
+# --- Reader version resolution ---
 
 
-def test_version_selector_returns_all_versions(v8_multi_clip):
-    selector = OpenClipVersionSelector()
-    clip_path, selected, current, available = selector.execute(
-        clip_path=str(v8_multi_clip),
-        selected_version="v003",
-    )
-    assert selected == "v003"
-    assert current == "v002"
-    assert available == "v001\nv002  (current)\nv003"
-
-
-def test_version_selector_falls_back_to_current_when_empty(v8_multi_clip):
-    selector = OpenClipVersionSelector()
-    _, selected, current, _available = selector.execute(
-        clip_path=str(v8_multi_clip),
-        selected_version="",
-    )
-    assert selected == current == "v002"
-
-
-def test_version_selector_raises_on_unknown_version(v8_multi_clip):
-    selector = OpenClipVersionSelector()
-    with pytest.raises(ValueError, match="v999"):
-        selector.execute(
-            clip_path=str(v8_multi_clip),
-            selected_version="v999",
+def _clip_with_three_versions(tmp_path: Path, clip_name: str = "mv3") -> Path:
+    """Write three versions via the Writer (currentVersion ends up as the last one written)."""
+    writer = OpenClipWriter()
+    images = torch.rand(2, 32, 32, 3)
+    for version_name in ("v001", "v002", "v003"):
+        writer.execute(
+            IMAGE=images, clip_path=str(tmp_path), clip_name=clip_name,
+            clip_filename="$(path)/$(clip_name)",
+            version_name=version_name, fps=24.0, start_frame=1001, frame_padding=4,
+            file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
+            layout="Standard Flame", publish=False,
         )
+    return tmp_path / clip_name / f"{clip_name}.clip"
+
+
+def test_reader_resolves_current_to_actual_version_name(tmp_path):
+    clip_path = _clip_with_three_versions(tmp_path)
+    reader = OpenClipReader()
+    result = reader.execute(
+        clip_path=str(clip_path), version="current",
+        start_frame=-1, end_frame=-1,
+        path_from="", path_to="",
+    )["result"]
+    version_name = result[6]
+    available_versions = result[-1]
+    assert version_name == "v003"  # never the literal "current"
+    assert available_versions == "v001\nv002\nv003  (current)"
+
+
+def test_reader_resolves_explicit_version_name(tmp_path):
+    clip_path = _clip_with_three_versions(tmp_path)
+    reader = OpenClipReader()
+    result = reader.execute(
+        clip_path=str(clip_path), version="v002",
+        start_frame=-1, end_frame=-1,
+        path_from="", path_to="",
+    )["result"]
+    assert result[6] == "v002"

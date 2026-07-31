@@ -35,6 +35,11 @@ _SKIP_METADATA_KEYS: frozenset[str] = frozenset({
 })
 
 
+def frame_path(path_pattern: str, frame_num: int) -> str:
+    """Resolve a printf-style sequence pattern to a single frame's file path."""
+    return path_pattern % frame_num if _FRAME_TOKEN_RE.search(path_pattern) else path_pattern
+
+
 def read_sequence(
     path_pattern: str,
     start_frame: int,
@@ -56,8 +61,7 @@ def read_sequence(
     metadata: dict = {}
 
     for i in range(n_frames):
-        frame_num = start_frame + i
-        filepath = path_pattern % frame_num if _FRAME_TOKEN_RE.search(path_pattern) else path_pattern
+        filepath = frame_path(path_pattern, start_frame + i)
         image, mask, frame_meta = _read_frame(filepath, load_alpha)
         images.append(image)
         masks.append(mask)

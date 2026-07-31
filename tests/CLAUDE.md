@@ -15,6 +15,7 @@ Fixtures live in `tests/fixtures/` and are checked into the repo:
 | `test_rgba.exr` | 64×64 16-bit half RGBA EXR |
 | `test_rgb.png` | 64×64 8-bit RGB PNG |
 | `test_rgba.png` | 64×64 8-bit RGBA PNG |
+| `test_ocio.ocio` | Minimal OCIO v2 config with a Display/View split mirroring an ACES config: a `"Raw"` view (identity passthrough) and an `"ACES 2.0 - SDR 100 nits (Rec.709)"` view whose `ViewTransform` halves values (stand-in for real tone-mapping) |
 
 ---
 
@@ -68,6 +69,20 @@ Fixtures live in `tests/fixtures/` and are checked into the repo:
 | `test_path_tokens_relative_to_clip` | Media path token in XML is relative; resolves correctly from the `.clip` file's directory |
 | `test_unknown_layout_raises` | Passing an unknown layout name raises `ValueError` |
 
+### `test_colour_transform.py`
+
+| Test | What it checks |
+|---|---|
+| `test_apply_raw_view_is_identity` | `view="Raw"` (no view transform) passes values through unchanged |
+| `test_apply_default_view_applies_view_transform` | Default view actually applies the view's transform (not skipped) — regression test for the plain-`getProcessor`-into-a-Display-space bug, see `lib/CLAUDE.md` |
+| `test_apply_scale_transform` | `scaled_2x` colour space converts correctly through to the reference space |
+| `test_apply_transform_does_not_modify_input` | Input tensor is never mutated |
+| `test_apply_transform_returns_float32` / `test_apply_transform_preserves_shape` | dtype and shape invariants |
+| `test_apply_transform_wrong_channels_raises` | 4-channel input raises `ValueError` |
+| `test_node_mask_passthrough` / `test_node_no_mask_returns_zeros` | `OpenClipColourTransform.execute()` MASK behaviour |
+| `test_node_raises_on_empty_config` / `test_node_raises_on_empty_space` / `test_node_raises_on_empty_view` | Required-input validation |
+| `test_node_output_constant` | End-to-end node call using the real default `view` |
+
 ---
 
 ## System Tests — `test_system.py`
@@ -77,6 +92,8 @@ System tests write to a temporary directory (`tmp_path` pytest fixture) and make
 | Test | What it checks |
 |---|---|
 | `test_read_v8_clip_end_to_end` | Load `v8_single_version.clip` fixture via Reader logic; verify IMAGE shape, `width`, `height`, `frame_count` |
+| `test_reader_is_changed_stable_when_unchanged` | `OpenClipReader.IS_CHANGED()` returns the same value for the same inputs, so ComfyUI's cache is reused when nothing changed |
+| `test_reader_is_changed_detects_rerender` | Overwriting the first frame in place (same path, new mtime) changes `IS_CHANGED()`'s return value, forcing ComfyUI to re-execute instead of serving a stale cached read |
 | `test_read_v8_multi_version_select` | Load `v8_multi_version.clip` requesting `v003`; verify frames from that version, not `currentVersion` |
 | `test_read_v8_current_version` | Load with `version="current"`; frames match the `currentVersion` version |
 | `test_write_standard_flame_layout` | Write 4 frames as EXR + Standard Flame layout; verify directory tree, `.clip` XML exists, media paths resolve to actual files |
@@ -86,10 +103,10 @@ System tests write to a temporary directory (`tmp_path` pytest fixture) and make
 | `test_write_publish_sidecar` | Write with `publish=True`; `<clip>.<version>.comfy.json` exists in the version media dir; XML has `<comfyWorkflow>` inside the version's `<userData>`, not at root level |
 | `test_write_no_publish_no_sidecar` | Write with `publish=False`; no `.comfy.json` written |
 | `test_round_trip_rgb` | Write 4 RGB frames; read them back; pixel values match within float tolerance |
-| `test_round_trip_rgba` | Write 4 RGBA frames; read back with `load_alpha=True`; RGB and alpha match within tolerance |
+| `test_round_trip_rgba` | Write 4 RGBA frames; read back (alpha always loaded by the Reader node); RGB and alpha match within tolerance |
 | `test_round_trip_preserves_fps` | Write with `fps=23.976` (decimal approximation of 24000/1001); Reader's `fps` output matches the exact rational, not the literal input |
 | `test_round_trip_new_version` | Write `v001` then write `v002` to the same clip dir; read back `v002` and verify correct frames |
 | `test_exr_half_vs_float_precision` | Write same frame as half and float; float preserves more precision; both readable |
 | `test_exr_compression_variants` | Write ZIP, PIZ, DWAB; all produce valid EXRs that round-trip pixel data |
-| `test_version_selector_wiring` | VersionSelector on `v8_multi_version.clip` returns all three versions and correct `current_version` |
-| `test_version_selector_returns_all_versions` | `available_versions` output lists all three versions, newline-separated, sorted, with `  (current)` marking `v002` |
+| `test_reader_resolves_current_to_actual_version_name` | Reader's `version_name` output is the actual resolved name (e.g. `v003`), never the literal `"current"`; `available_versions` lists all versions with `  (current)` marking the right one |
+| `test_reader_resolves_explicit_version_name` | Requesting an explicit version name resolves `version_name` to that same name |
