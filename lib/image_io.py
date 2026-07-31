@@ -170,10 +170,10 @@ def _write_frame(
                         pass
         # Writer format settings are applied last so they always override carried metadata.
         spec["compression"] = _OIIO_COMPRESSIONS[exr_compression]
-        pixels_write = pixels.astype(np.float32)
+        pixels_write = np.ascontiguousarray(pixels, dtype=np.float32) 
     else:
         spec = oiio.ImageSpec(width, height, nchannels, oiio.UINT8)
-        pixels_write = (np.clip(pixels, 0.0, 1.0) * 255).astype(np.uint8)
+        pixels_write = np.ascontiguousarray((np.clip(pixels, 0.0, 1.0) * 255).astype(np.uint8)) 
 
     out = oiio.ImageOutput.create(filepath)
     if not out:
@@ -182,6 +182,7 @@ def _write_frame(
         raise RuntimeError(f"OIIO failed to open for writing: {filepath}")
     if not out.write_image(pixels_write):
         out.close()
-        raise RuntimeError(f"OIIO write_image failed for: {filepath}")
+        err = out.geterror()
+        raise RuntimeError(f"OIIO write_image failed for: {filepath} - {err}")
 
     out.close()
