@@ -372,6 +372,65 @@ def test_write_duplicate_version_raises(tmp_path):
         )
 
 
+def test_write_next_version_defaults_to_v001_on_new_clip(tmp_path):
+    writer = OpenClipWriter()
+    images = torch.rand(4, 64, 64, 3)
+    (clip_path,) = writer.execute(
+        IMAGE=images, clip_path=str(tmp_path), clip_name="mv",
+        clip_filename="$(path)/$(clip_name)",
+        version_name="next", fps=24.0, start_frame=1001, frame_padding=4,
+        file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
+        layout="Standard Flame", publish=False,
+    )
+    parsed = openclip_xml.parse(clip_path)
+    assert set(parsed.versions.keys()) == {"v001"}
+
+
+def test_write_next_version_increments_past_existing(tmp_path):
+    writer = OpenClipWriter()
+    images = torch.rand(4, 64, 64, 3)
+    for _ in range(3):
+        (clip_path,) = writer.execute(
+            IMAGE=images, clip_path=str(tmp_path), clip_name="mv",
+            clip_filename="$(path)/$(clip_name)",
+            version_name="next", fps=24.0, start_frame=1001, frame_padding=4,
+            file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
+            layout="Standard Flame", publish=False,
+        )
+    parsed = openclip_xml.parse(clip_path)
+    assert set(parsed.versions.keys()) == {"v001", "v002", "v003"}
+    assert parsed.current_version == "v003"
+
+
+def test_write_overwrite_replaces_version_and_deletes_stale_frames(tmp_path):
+    writer = OpenClipWriter()
+    images_first = torch.zeros(6, 64, 64, 3)
+    images_second = torch.ones(3, 64, 64, 3)
+
+    writer.execute(
+        IMAGE=images_first, clip_path=str(tmp_path), clip_name="mv",
+        clip_filename="$(path)/$(clip_name)",
+        version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
+        file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
+        layout="Standard Flame", publish=False,
+    )
+    media_dir = tmp_path / "mv" / "versions" / "v001"
+    assert len(list(media_dir.glob("*.exr"))) == 6
+
+    (clip_path,) = writer.execute(
+        IMAGE=images_second, clip_path=str(tmp_path), clip_name="mv",
+        clip_filename="$(path)/$(clip_name)",
+        version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
+        file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
+        layout="Standard Flame", publish=False, overwrite=True,
+    )
+
+    # Stale frames 1004-1006 from the first (longer) render must be gone.
+    assert len(list(media_dir.glob("*.exr"))) == 3
+    parsed = openclip_xml.parse(clip_path)
+    assert set(parsed.versions.keys()) == {"v001"}
+
+
 def test_write_format_mismatch_raises(tmp_path):
     writer = OpenClipWriter()
     images_hd = torch.rand(4, 64, 64, 3)

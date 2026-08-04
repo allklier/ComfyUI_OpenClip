@@ -53,6 +53,8 @@ OpenClipReader.version_name  → OpenClipWriter.version_name  (optional: Writer 
 # Writer clip_filename stays at default "$(path)/$(clip_name)"
 ```
 
+Leave Writer's `version_name` at its default `"next"` (don't wire `Reader.version_name` in) if each run should land as a new version. Wiring `Reader.version_name` in means re-running the same version collides on the next execute — set Writer's `overwrite` to `True` if that re-processing is intentional.
+
 ---
 
 ### `OpenClipWriter` — `writer.py`
@@ -71,7 +73,8 @@ OpenClip XML is always written as version 8 (v9 is not yet released by Autodesk)
 | `clip_path` | `STRING` | Folder path for the output package. If a `.clip` file path is supplied (e.g. wired from Reader), the parent directory is used automatically. |
 | `clip_name` | `STRING` | Clip name used for directory and file naming. Can be wired from Reader's `clip_name` output. |
 | `clip_filename` | `STRING` | Destination pattern; default `$(path)/$(clip_name).clip`. `$(path)` expands to `clip_path` (normalised to a folder); `$(clip_name)` expands to `clip_name`. Parentheses delimit the token explicitly, so literal text can follow directly with no ambiguity, e.g. `$(path)/$(clip_name)_clean.clip`. Supports `..` segments, e.g. `$(path)/../processed/$(clip_name).clip`. The `.clip` extension is stripped before passing the name to the layout builder, so the package is named correctly regardless. The resulting name is used for **both** the `.clip` file and the media sequence filenames (e.g. `$(clip_name)_clean` → `myshot_clean.clip` and `myshot_clean.0001.exr`); there's no way to rename only the `.clip` file. |
-| `version_name` | `STRING` | Version label, e.g. `v001` |
+| `version_name` | `STRING` | Version label, e.g. `v001`. Default `"next"` — a Writer-only sentinel (mirrors the Reader's `"current"`) resolved via `openclip_xml.next_version()`: reads the existing `.clip`, returns one past the highest `v<NNN>` version present, or `v001` if the clip doesn't exist yet. A brand-new Writer just works with no typing; wire `Reader.version_name` in, or type an explicit name, to opt out of auto-selection. |
+| `overwrite` | `BOOLEAN` | Default `False`. If the resolved `version_name` already exists in the `.clip` and this is `False`, raises `ValueError` (with a `VERSION ALREADY EXISTS` banner and a fix-it list) instead of writing. If `True`, deletes that version's existing frame files first (so a shorter re-render doesn't leave stale trailing frames), then overwrites the frames and the XML `<version>`/`<feed>` entry. Never triggers when `version_name` resolved from `"next"`, since that's computed to not collide. |
 | `include_version_in_filename` | `BOOLEAN` | If true, inserts `version_name` into the frame sequence filenames only, between `clip_name` and the frame counter (e.g. `myshot.v001.0001.exr`). Does **not** affect the `.clip` filename — that stays governed by `clip_filename`/`clip_name` alone, so multiple versions still merge into one `.clip` file via `_merge_version`. Default `False`. |
 | `start_frame` | `INT` | Frame number for the first output file — wire from Reader's `start_frame` to preserve numbering |
 | `frame_padding` | `INT` | Zero-padding width (default `4` → `%04d`) |

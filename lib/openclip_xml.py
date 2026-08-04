@@ -100,6 +100,28 @@ def resolve_version(clip: ParsedClip, version: str) -> ClipVersion:
     return clip.versions[name]
 
 
+_VERSION_NUM_RE = re.compile(r'^v(\d+)$')
+
+
+def next_version(existing_versions: dict) -> str:
+    """Compute the next sequential version name (v001, v002, ...) given a clip's existing versions.
+
+    Only names matching Flame's v<digits> convention count toward the sequence;
+    other names are ignored for numbering. Padding width matches the highest
+    matching version found (e.g. v009 -> v010); defaults to 'v001' (3-digit)
+    when there are no matching versions yet.
+    """
+    numbered = []
+    for name in existing_versions:
+        m = _VERSION_NUM_RE.match(name)
+        if m:
+            numbered.append((int(m.group(1)), len(m.group(1))))
+    if not numbered:
+        return "v001"
+    max_num, padding = max(numbered, key=lambda t: t[0])
+    return f"v{max_num + 1:0{padding}d}"
+
+
 def fps_to_rational(fps: str) -> tuple[int, int]:
     """Return (numerator, denominator) for a frame-rate label, defaulting to 24/1."""
     return _FPS_TABLE.get(fps, (24, 1))

@@ -20,7 +20,8 @@ class OpenClipWriter:
                 "clip_path": ("STRING", {"default": ""}),
                 "clip_name": ("STRING", {"default": ""}),
                 "clip_filename": ("STRING", {"default": "$(path)/$(clip_name).clip"}),
-                "version_name": ("STRING", {"default": "v001"}),
+                "version_name": ("STRING", {"default": "next"}),
+                "overwrite": ("BOOLEAN", {"default": False}),
                 "include_version_in_filename": ("BOOLEAN", {"default": False}),
                 "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 120.0, "step": 0.001}),
                 "start_frame": ("INT", {"default": 1001, "min": 0, "max": 999999}),
@@ -62,6 +63,7 @@ class OpenClipWriter:
         colour_space: str = "Rec.1886 Rec.709 - Display",
         layout: str = "Standard Flame",
         publish: bool = False,
+        overwrite: bool = False,
         include_version_in_filename: bool = False,
         MASK: Optional[torch.Tensor] = None,
         CLIP_METADATA: Optional[dict] = None,
@@ -72,12 +74,38 @@ class OpenClipWriter:
             clip_path.strip(), clip_name.strip(), clip_filename.strip()
         )
 
+        # clip_file's location doesn't depend on version_name in either layout (see
+        # package_layout.build), so this probe build only locates it to check existing
+        # versions before "next" is resolved and before a collision can be detected.
+        probe = package_layout.build(
+            layout, output_dir, clip_name, version_name, file_format, frame_padding
+        )
+        existing = openclip_xml.parse(str(probe.clip_file)) if probe.clip_file.exists() else None
+
+        if version_name == "next":
+            version_name = openclip_xml.next_version(existing.versions if existing else {})
+
+        version_exists = existing is not None and version_name in existing.versions
+        if version_exists and not overwrite:
+            raise ValueError(
+                f"[OpenClipWriter] VERSION ALREADY EXISTS — refusing to write.\n"
+                f"Version '{version_name}' already exists in '{probe.clip_file}'.\n"
+                f"Fix by one of:\n"
+                f"  - set version_name to 'next' to auto-pick the next free version\n"
+                f"  - enable 'overwrite' to replace '{version_name}'\n"
+                f"  - type a different version_name"
+            )
+
         paths = package_layout.build(
             layout, output_dir, clip_name, version_name, file_format, frame_padding
         )
         package_layout.create_dirs(paths)
 
         frame_stem = f"{clip_name}.{version_name}" if include_version_in_filename else clip_name
+
+        if version_exists and overwrite:
+            _delete_existing_frames(paths.media_dir, frame_stem, file_format)
+
         abs_pattern = str(paths.media_dir / f"{frame_stem}.%0{frame_padding}d.{file_format.lower()}")
         image_io.write_sequence(
             abs_pattern, IMAGE, MASK, start_frame, file_format, exr_bit_depth, exr_compression,
@@ -126,11 +154,6 @@ def _merge_version(
     fmt: ClipFormat,
 ) -> bytes:
     existing = openclip_xml.parse(str(clip_file))
-    if version_name in existing.versions:
-        raise ValueError(
-            f"Version '{version_name}' already exists in '{clip_file.name}'. "
-            f"Use a different version name."
-        )
     existing_fmt = openclip_xml.read_format(str(clip_file))
     mismatches = _format_mismatches(existing_fmt, fmt)
     if mismatches:
@@ -153,6 +176,21 @@ def _format_mismatches(
     if existing.file_format and new.file_format and existing.file_format != new.file_format:
         results.append(("file_format", existing.file_format, new.file_format))
     return results
+
+
+def _delete_existing_frames(media_dir: Path, frame_stem: str, file_format: str) -> None:
+    """Remove this version's previously rendered frames before rewriting (overwrite=True).
+
+    Deletes before writing rather than just letting new frames land on top, so a shorter
+    re-render doesn't leave stale extra frames from the old render behind.
+    """
+    pattern = f"{frame_stem}.*.{file_format.lower()}"
+    deleted = 0
+    for f in media_dir.glob(pattern):
+        f.unlink()
+        deleted += 1
+    if deleted:
+        print(f"[OpenClipWriter] Overwrite: deleted {deleted} existing frame file(s) matching '{pattern}' in {media_dir}")
 
 
 def _resolve_destination(clip_path_in: str, clip_name_in: str, clip_filename: str) -> tuple[str, str]:

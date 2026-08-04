@@ -36,6 +36,10 @@ Fixtures live in `tests/fixtures/` and are checked into the repo:
 | `test_fps_label_from_float_out_of_tolerance_raises` | A value with no nearby supported rate (`26.5`) raises `ValueError` |
 | `test_missing_version_raises` | Requesting a version name not in the clip raises `ValueError` |
 | `test_current_version_fallback` | `version="current"` resolves to the `currentVersion` attribute value |
+| `test_next_version_no_existing_returns_v001` | `next_version({})` returns `"v001"` |
+| `test_next_version_increments_highest` | `next_version` returns one past the highest existing `v<NNN>` |
+| `test_next_version_ignores_non_numbered_names` | A non-`v<NNN>` version name (e.g. `"final"`) doesn't affect the computed next number |
+| `test_next_version_preserves_padding_width` | `v009` → `v010`, not `v10` |
 | `test_publish_metadata_in_xml` | When publish path provided, `<userMetadata>` element with correct relative path is present |
 | `test_no_publish_metadata_absent` | Without publish, no `<userMetadata>` element is written |
 
@@ -110,3 +114,6 @@ System tests write to a temporary directory (`tmp_path` pytest fixture) and make
 | `test_exr_compression_variants` | Write ZIP, PIZ, DWAB; all produce valid EXRs that round-trip pixel data |
 | `test_reader_resolves_current_to_actual_version_name` | Reader's `version_name` output is the actual resolved name (e.g. `v003`), never the literal `"current"`; `available_versions` lists all versions with `  (current)` marking the right one |
 | `test_reader_resolves_explicit_version_name` | Requesting an explicit version name resolves `version_name` to that same name |
+| `test_write_next_version_defaults_to_v001_on_new_clip` | `version_name="next"` on a fresh clip resolves to `v001` |
+| `test_write_next_version_increments_past_existing` | Three successive writes with `version_name="next"` produce `v001`, `v002`, `v003` |
+| `test_write_overwrite_replaces_version_and_deletes_stale_frames` | `overwrite=True` on an existing `version_name` deletes that version's old frame files before writing fewer new ones — no orphaned stale frames remain |

@@ -128,6 +128,25 @@ def test_missing_version_raises(v8_multi_clip):
         openclip_xml.resolve_version(clip, "v999")
 
 
+# --- next_version tests ---
+
+
+def test_next_version_no_existing_returns_v001():
+    assert openclip_xml.next_version({}) == "v001"
+
+
+def test_next_version_increments_highest():
+    assert openclip_xml.next_version({"v001": None, "v002": None}) == "v003"
+
+
+def test_next_version_ignores_non_numbered_names():
+    assert openclip_xml.next_version({"v001": None, "final": None}) == "v002"
+
+
+def test_next_version_preserves_padding_width():
+    assert openclip_xml.next_version({"v009": None}) == "v010"
+
+
 # --- generate tests ---
 
 
