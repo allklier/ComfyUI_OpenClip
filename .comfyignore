@@ -1,0 +1,9 @@
+# Test infrastructure — not needed to run the nodes
+tests/
+
+# Internal architecture/decision docs — not needed to run the nodes
+CLAUDE.md
+
+# Development-only assets
+docs/
+.vscode/
