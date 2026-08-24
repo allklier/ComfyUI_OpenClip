@@ -17,6 +17,10 @@ Fixtures live in `tests/fixtures/` and are checked into the repo:
 | `test_rgba.png` | 64×64 8-bit RGBA PNG |
 | `test_ocio.ocio` | Minimal OCIO v2 config with a Display/View split mirroring an ACES config: a `"Raw"` view (identity passthrough) and an `"ACES 2.0 - SDR 100 nits (Rec.709)"` view whose `ViewTransform` halves values (stand-in for real tone-mapping) |
 
+AOV fixtures (`aov_fixtures`, `aov_pixels`, `conftest.py`) are generated on the fly rather than checked in, matching `image_fixtures`'s pattern: a single multichannel EXR (`aov_multi.####.exr`, dotted `R,G,B,A,N.X..Z,Nw.X..Z,Z` channel names), a separate-file-per-AOV set (`aov_sep.####.exr` + `aov_sep_AOV_Normals/_NormalsWorld/_Depth.####.exr`), and a beauty-only file with no AOVs (`aov_none.####.exr`) — mirroring `ComfyUI_Harmonize/tests/generate_synthetic_exr.py`'s convention. `aov_pixels` exposes the exact source arrays so tests can assert exact (not just shape) round-trip values.
+
+`aov_multipart_fixtures` generates a **true multi-part** EXR (`aov_multipart.####.exr`) matching the real-world part-name convention confirmed against an actual Flame render (AOVs imported from Cinema 4D): one subimage each for `beauty`/`depth`/`normals`/a Cryptomatte-like part, every part using generic `R,G,B` channel names (not `aov_fixtures`'s dotted `N.X`/`Z` single-part-multichannel layout) — depth is a replicated scalar across `R,G,B`, matching what was observed empirically. `write_multipart_exr` is a callable fixture exposing the underlying writer helper for tests needing a custom part layout (e.g. non-default part names). See lib/CLAUDE.md "AOV Channel Handling".
+
 ---
 
 ## Unit Tests
@@ -61,6 +65,19 @@ Fixtures live in `tests/fixtures/` and are checked into the repo:
 | `test_write_png_rgba` | Writes RGBA PNG; alpha channel preserved |
 | `test_frame_padding` | `%04d` default produces `frame.0001.exr`; `%06d` produces `frame.000001.exr` |
 | `test_read_missing_frame_raises` | Attempting to read a non-existent frame raises `FileNotFoundError` |
+| `test_read_aov_multichannel_by_name` | AOVs resolved by name from a single multichannel EXR match the exact source arrays |
+| `test_read_aov_separate_files` | AOVs resolved from sibling `_AOV_Normals`/`_AOV_NormalsWorld`/`_AOV_Depth` files match the exact source arrays |
+| `test_read_aov_absent_zero_fills` | A beauty-only file (no AOV channels, no sibling files) yields zero-filled AOV tensors, no error |
+| `test_read_aov_multipart_by_part_name` | Regression test: AOVs resolve correctly from a true multi-part EXR keyed by EXR part `name` (default `depth_part_name`/`normal_raw_part_name`), including depth's replicated-scalar-across-R,G,B convention — previously came back zero-filled/black since only subimage 0 was ever read and channel names alone couldn't identify parts |
+| `test_read_aov_multipart_part_name_override` | Non-default part names, all three `*_part_name` params supplied explicitly — proves the override mechanism actually drives lookup |
+| `test_read_sequence_ignores_aovs` | `read_sequence()` (non-AOV callers) still works unchanged on an AOV-bearing file |
+| `test_write_aov_multichannel_round_trip` / `test_write_aov_separate_files_round_trip` | AOVs written via `write_sequence(aovs=..., aov_layout=...)` read back matching the input tensors; only connected AOVs produce sibling files in the separate-files case |
+| `test_write_aov_png_raises` | AOVs + `file_format="PNG"` raises `ValueError` |
+| `test_write_aov_invalid_layout_raises` | An unknown `aov_layout` value raises `ValueError` |
+| `test_aov_sibling_pattern` | `_aov_sibling_pattern()` inserts the suffix correctly for both frame-token and static (no-token) path forms |
+| `test_exr_round_trip_does_not_clamp` | An out-of-`0..1`-range image (negative + `>1.0` values) round-trips through EXR unchanged at both half and float bit depth — regression test for `EXR_REQUIREMENTS.md` requirement #1 |
+| `test_png_write_does_clamp_intentionally` | The same image written as PNG *does* clamp — locks in that this is intentional (8-bit format), unlike EXR above |
+| `test_colour_space_metadata_round_trips_verbatim` | A colour-space value round-trips verbatim through `COLOUR_SPACE_BACKUP_KEY`, including names OIIO's `oiio:ColorSpace` registry would rename or silently drop (`ACEScg`, a camera log profile name) |
 
 ### `test_package_layout.py`
 
@@ -98,6 +115,13 @@ System tests write to a temporary directory (`tmp_path` pytest fixture) and make
 | `test_read_v8_clip_end_to_end` | Load `v8_single_version.clip` fixture via Reader logic; verify IMAGE shape, `width`, `height`, `frame_count` |
 | `test_reader_is_changed_stable_when_unchanged` | `OpenClipReader.IS_CHANGED()` returns the same value for the same inputs, so ComfyUI's cache is reused when nothing changed |
 | `test_reader_is_changed_detects_rerender` | Overwriting the first frame in place (same path, new mtime) changes `IS_CHANGED()`'s return value, forcing ComfyUI to re-execute instead of serving a stale cached read |
+| `test_reader_is_changed_survives_linked_clip_path` | **Cache regression.** ComfyUI passes `None` for any input driven by a link, so `IS_CHANGED()` must not raise -- an exception becomes `float("NaN")`, which never equals itself, so the node and (via caching.py's ancestry walk) the entire downstream graph re-execute on every queue. A text node feeding `clip_path` caused exactly this in a real workflow |
+| `test_reader_is_changed_survives_every_input_linked` | The same, with every input linked at once |
+| `test_reader_is_changed_never_raises_on_bad_clip_path` | A nonexistent clip returns the stable fallback rather than raising -- a broken path must fail in `execute()`, with a real error message, not silently destroy caching |
+| `test_reader_is_changed_detects_rerender_when_clip_path_is_linked` | **The case the `_LAST_READ_PLAN` memory exists for.** With `clip_path` linked (so `IS_CHANGED` receives `None`), a re-render of the media must still invalidate — otherwise an artist rendering a new clip version is served a stale cached read forever |
+| `test_reader_is_changed_returns_constant_before_any_execute` | Before the first `execute()` there is nothing remembered; returns the stable constant rather than raising |
+| `test_reader_is_changed_memory_is_per_node_instance` | Two readers on different clips keyed by `UNIQUE_ID` don't share a fingerprint |
+| `test_reader_is_changed_absorbs_unknown_inputs` | `**kwargs` absorbs inputs added to `INPUT_TYPES` later, so adding one can't reintroduce the NaN failure |
 | `test_read_v8_multi_version_select` | Load `v8_multi_version.clip` requesting `v003`; verify frames from that version, not `currentVersion` |
 | `test_read_v8_current_version` | Load with `version="current"`; frames match the `currentVersion` version |
 | `test_write_standard_flame_layout` | Write 4 frames as EXR + Standard Flame layout; verify directory tree, `.clip` XML exists, media paths resolve to actual files |
@@ -117,3 +141,9 @@ System tests write to a temporary directory (`tmp_path` pytest fixture) and make
 | `test_write_next_version_defaults_to_v001_on_new_clip` | `version_name="next"` on a fresh clip resolves to `v001` |
 | `test_write_next_version_increments_past_existing` | Three successive writes with `version_name="next"` produce `v001`, `v002`, `v003` |
 | `test_write_overwrite_replaces_version_and_deletes_stale_frames` | `overwrite=True` on an existing `version_name` deletes that version's old frame files before writing fewer new ones — no orphaned stale frames remain |
+| `test_write_read_aov_multichannel_round_trip` / `test_write_read_aov_separate_files_round_trip` | Full node-level round trip: `OpenClipWriter(NORMAL=..., NORMAL_WORLD=..., DEPTH=...)` → `.clip` on disk → `OpenClipReader` outputs match, for both `aov_layout` values |
+| `test_read_no_aovs_zero_fills` | A clip written without AOVs still produces valid zero-filled `NORMAL`/`NORMAL_WORLD`/`DEPTH`/`NORMAL_RAW` outputs on read |
+| `test_reader_multipart_aov_by_part_name` | Node-level regression test: `OpenClipReader` resolves `DEPTH`/`NORMAL_RAW` from a real-world part-name-keyed multi-part EXR built by hand (Writer can't produce this layout yet) |
+| `test_writer_aov_png_raises` | Writer-level `ValueError` when an AOV input is connected with `file_format="PNG"` |
+| `test_colour_space_round_trips_through_writer_and_reader` | `colour_space` survives a full Writer→Reader round trip for a camera-log-style value, via `CLIP_METADATA` |
+| `test_colour_space_empty_when_not_carried` | `colour_space` is `""` when no `CLIP_METADATA` was wired |

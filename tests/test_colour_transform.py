@@ -116,6 +116,28 @@ def test_apply_transform_wrong_channels_raises():
         apply_colour_transform(images, FIXTURE_CONFIG, "linear", view="Raw")
 
 
+def test_apply_inverse_reverses_the_forward_view_transform():
+    # test_apply_default_view_applies_view_transform: forward(0.5, "linear", default
+    # view) == 0.25 (the stand-in view transform halves values). Inverse must recover
+    # the original 0.5 from that same 0.25.
+    images = torch.full((1, 4, 4, 3), 0.25)
+    result = apply_colour_transform(images, FIXTURE_CONFIG, "linear", inverse=True)
+    assert torch.allclose(result, torch.full_like(result, 0.5), atol=1e-5)
+
+
+def test_apply_inverse_raw_view_is_still_identity():
+    images = torch.full((1, 4, 4, 3), 0.5)
+    result = apply_colour_transform(images, FIXTURE_CONFIG, "linear", view="Raw", inverse=True)
+    assert torch.allclose(result, images, atol=1e-5)
+
+
+def test_apply_forward_then_inverse_round_trips():
+    images = torch.rand(1, 4, 4, 3)
+    forward = apply_colour_transform(images, FIXTURE_CONFIG, "scaled_2x")
+    back = apply_colour_transform(forward, FIXTURE_CONFIG, "scaled_2x", inverse=True)
+    assert torch.allclose(back, images, atol=1e-5)
+
+
 # --- node ---
 
 
@@ -165,3 +187,23 @@ def test_node_output_constant():
     out_image, _ = node.execute(IMAGE=images, ocio_config=FIXTURE_CONFIG,
                                 input_colour_space="scaled_2x", view=OUTPUT_VIEW)
     assert torch.allclose(out_image, torch.full_like(out_image, 0.25), atol=1e-5)
+
+
+def test_node_direction_defaults_to_forward():
+    node = OpenClipColourTransform()
+    images = torch.full((1, 4, 4, 3), 0.5)
+    with_default, _ = node.execute(IMAGE=images, ocio_config=FIXTURE_CONFIG,
+                                    input_colour_space="linear", view=OUTPUT_VIEW)
+    explicit_forward, _ = node.execute(IMAGE=images, ocio_config=FIXTURE_CONFIG,
+                                        input_colour_space="linear", view=OUTPUT_VIEW,
+                                        direction="forward")
+    assert torch.allclose(with_default, explicit_forward)
+
+
+def test_node_inverse_direction():
+    node = OpenClipColourTransform()
+    images = torch.full((1, 4, 4, 3), 0.25)
+    out_image, _ = node.execute(IMAGE=images, ocio_config=FIXTURE_CONFIG,
+                                 input_colour_space="linear", view=OUTPUT_VIEW,
+                                 direction="inverse")
+    assert torch.allclose(out_image, torch.full_like(out_image, 0.5), atol=1e-5)

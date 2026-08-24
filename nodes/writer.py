@@ -29,11 +29,15 @@ class OpenClipWriter:
                 "file_format": (["EXR", "PNG"],),
                 "exr_bit_depth": (["half (16-bit)", "float (32-bit)"],),
                 "exr_compression": (["ZIP", "PIZ", "DWAB"],),
+                "aov_layout": (["Multichannel", "Separate Files"],),
                 "publish": ("BOOLEAN", {"default": False}),
             },
             "optional": {
                 "MASK": ("MASK",),
                 "CLIP_METADATA": ("CLIP_METADATA",),
+                "NORMAL": ("IMAGE",),
+                "NORMAL_WORLD": ("IMAGE",),
+                "DEPTH": ("MASK",),
             },
             "hidden": {
                 "extra_pnginfo": "EXTRA_PNGINFO",
@@ -60,6 +64,7 @@ class OpenClipWriter:
         file_format: str,
         exr_bit_depth: str,
         exr_compression: str,
+        aov_layout: str = "Multichannel",
         colour_space: str = "Rec.1886 Rec.709 - Display",
         layout: str = "Standard Flame",
         publish: bool = False,
@@ -67,6 +72,9 @@ class OpenClipWriter:
         include_version_in_filename: bool = False,
         MASK: Optional[torch.Tensor] = None,
         CLIP_METADATA: Optional[dict] = None,
+        NORMAL: Optional[torch.Tensor] = None,
+        NORMAL_WORLD: Optional[torch.Tensor] = None,
+        DEPTH: Optional[torch.Tensor] = None,
         extra_pnginfo: Optional[dict] = None,
         prompt=None,
     ):
@@ -107,9 +115,10 @@ class OpenClipWriter:
             _delete_existing_frames(paths.media_dir, frame_stem, file_format)
 
         abs_pattern = str(paths.media_dir / f"{frame_stem}.%0{frame_padding}d.{file_format.lower()}")
+        aovs = {"normal": NORMAL, "normal_world": NORMAL_WORLD, "depth": DEPTH}
         image_io.write_sequence(
             abs_pattern, IMAGE, MASK, start_frame, file_format, exr_bit_depth, exr_compression,
-            metadata=CLIP_METADATA,
+            metadata=CLIP_METADATA, aovs=aovs, aov_layout=aov_layout,
         )
 
         n_frames, height, width = IMAGE.shape[0], IMAGE.shape[1], IMAGE.shape[2]
