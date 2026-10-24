@@ -26,16 +26,14 @@ Knowing *which* files to stat is the awkward part when `clip_path` is linked. It
 | `end_frame` | `INT` | Last frame to load; `-1` = all frames |
 | `path_from` | `STRING` | Path prefix to replace in media paths from the XML (e.g. `/Volumes/LocalJobs`). Leave empty to let the reader auto-detect the remap. |
 | `path_to` | `STRING` | Replacement prefix (e.g. `/mnt/LocalJobs`). Only applied when `path_from` is non-empty and matches. Ignored when auto-remap is active. |
-| `depth_layer_name` | `STRING` | EXR part `name` to look for `DEPTH` on, in a true multi-part EXR (default `"depth"`). Empty string disables this lookup. Only used if `DEPTH` isn't already found via the dotted-channel or sibling-file conventions — see `lib/CLAUDE.md` "AOV Channel Handling". |
-| `normal_world_layer_name` | `STRING` | EXR part `name` to look for `NORMAL_WORLD` on (default `""` = disabled — no real file has demonstrated a distinctly-named world-space part yet). Type the actual part name if your pipeline has one. |
-| `normal_raw_layer_name` | `STRING` | EXR part `name` to look for `NORMAL_RAW` on (default `"normals"`). This repo does not try to determine whether that part is camera- or world-space — see `NORMAL_RAW` below. |
+| `frame_cap` | `INT` | Caps the read to at most this many frames from the resolved start (the clip's own native start when `start_frame` is `-1`) — independent of each clip's own frame numbering, which varies (Flame commonly starts at 1001, but not always). `-1` (default) disables the cap. Appended after `path_to`, not placed next to `start_frame`/`end_frame` where it semantically belongs, so existing saved workflows' positional `widgets_values` stay valid. |
 
 **Outputs**
 
 | Name | Type | Description |
 |---|---|---|
 | `IMAGE` | `IMAGE` | RGB tensor batch `(N, H, W, 3)` |
-| `MASK` | `MASK` | Alpha tensor batch `(N, H, W)`, loaded automatically when the source has a 4th channel — zeros if no alpha in source |
+| `MASK` | `MASK` | Alpha tensor batch `(N, H, W)`, loaded automatically when the source has a 4th channel — fully opaque (all-ones) if no alpha in source, not zeros (standard VFX convention: absent alpha means no matte, not "nothing here" — corrected 2026-09-23, see `lib/CLAUDE.md` "Alpha Channel Handling") |
 | `frame_count` | `INT` | Number of frames loaded |
 | `width` | `INT` | Frame width in pixels |
 | `height` | `INT` | Frame height in pixels |
@@ -45,17 +43,13 @@ Knowing *which* files to stat is the awkward part when `clip_path` is linked. It
 | `clip_path` | `STRING` | Pass-through of the resolved input clip path — wire into Writer's `clip_path` |
 | `clip_name` | `STRING` | Clip name from the XML `<name>` element — wire into Writer's `clip_name` |
 | `metadata` | `CLIP_METADATA` | Dict of EXR header attributes from the first frame — wire into Writer's `CLIP_METADATA` |
-| `NORMAL` | `IMAGE` | Camera-space normals AOV, batch `(N, H, W, 3)`. Resolved by dotted `N.X`/`N.Y`/`N.Z` channel names (single multichannel EXR or a sibling `<clip_name>_AOV_Normals.####.exr` file) — see `lib/CLAUDE.md` "AOV Channel Handling". Zero-filled if not found; not fed by the part-name convention (no real file has demonstrated a distinctly camera-space-named part yet — use `NORMAL_RAW` for that case). |
-| `NORMAL_WORLD` | `IMAGE` | World-space normals AOV, same shape/dotted-channel/sibling-file rules as `NORMAL` (`Nw.X`/`Nw.Y`/`Nw.Z`, sibling suffix `_AOV_NormalsWorld`), plus the part-name convention via `normal_world_layer_name` (disabled by default). |
-| `DEPTH` | `MASK` | Depth AOV, batch `(N, H, W)`. Resolved via dotted `Z` channel, sibling `_AOV_Depth` file, or a named EXR part matching `depth_layer_name` (default `"depth"`) — real Flame material stores this as a replicated scalar across R/G/B, read as channel 0. Zero-filled if none of those find it (no fabricated "far" value). |
-| `NORMAL_RAW` | `IMAGE` | Normals-like AOV whose camera/world space this repo does not determine, batch `(N, H, W, 3)`. Resolved only via the part-name convention (`normal_raw_layer_name`, default `"normals"`) — confirmed against a real Flame render whose AOVs were imported from another DCC (Cinema 4D), so there was no way to know the space from the file alone. Space labelling is left to a downstream node/toggle in the consuming project. Zero-filled if not found. |
+| `aov_handle` | `AOV_HANDLE` | Lazy handle for AOV extraction — locates the file(s), decodes nothing. Wire into one `OpenClipAOVReader` per AOV you actually want; a plain beauty-only clip costs nothing extra since nothing decodes until an `OpenClipAOVReader` asks for a name. See `OpenClipAOVReader` below. |
 | `colour_space` | `STRING` | Colour-space/transfer-function identity from the EXR header (e.g. `ACEScg`, a camera log profile name), empty string if the source has none. Prefers a project-namespaced backup attribute over the raw `oiio:ColorSpace` key — see `lib/CLAUDE.md` "Colour-Space Metadata" for why. |
 | `fps` | `FLOAT` | Frame rate read from the clip's `<editRate>` (one value per clip, shared by every version), as the exact rational value — e.g. the `23.976` label is really `24000/1001`, output as `23.976023976023978`, not the rounded decimal. Wire into Writer's `fps` to preserve it on round-trip. |
 | `available_versions` | `STRING` | Newline-separated list of every version name in the clip, sorted, with `  (current)` appended to the one matching `currentVersion`. Also displayed live in-node via `web/openclip_reader.js`; this output is the no-JS fallback — wire it to any text-preview node if the in-node widget doesn't populate. |
+| `available_aovs` | `STRING` | Newline-separated list of every named EXR part found beyond subimage 0 (beauty), for one representative frame — header-only, nothing is pixel-decoded to build this list. Copy a name from here into an `OpenClipAOVReader`'s `part_name` (no dropdown is possible — ComfyUI gives a node no way to write another node's widget value — same mechanism as `available_versions`). Also displayed live in-node via `web/openclip_reader.js`. Empty string for a plain beauty-only clip. |
 
-AOV outputs are always computed (auto-detected, no toggle) — a plain beauty-only clip simply yields zero-filled `NORMAL`/`NORMAL_WORLD`/`DEPTH`/`NORMAL_RAW`, matching the existing zero-filled-`MASK`-on-no-alpha precedent.
-
-`NORMAL_RAW` has no Writer counterpart yet — Writer accepts `NORMAL`/`NORMAL_WORLD`/`DEPTH` but not `NORMAL_RAW`, so it can't currently be round-tripped (writing the part-name convention back out — a multi-part EXR with named parts — isn't implemented). This is a known gap, not a silent drop: there's no input to wire it into.
+**AOVs are a separate, generic mechanism as of 2026-09-23** — see `OpenClipAOVReader`/`OpenClipAOVWriter` below. This replaced a fixed three-AOV interface (`NORMAL`/`NORMAL_WORLD`/`DEPTH`/`NORMAL_RAW` outputs, `depth_layer_name`/`normal_world_layer_name`/`normal_raw_layer_name` widgets) that had two problems: every Reader instance carried those three widgets whether or not the clip had any AOVs at all, and adding a new AOV meant changing the Reader's own interface. Breaking change, made deliberately (explicit user decision, 2026-09-23) rather than kept alongside the old interface — AOVs had only been used in development/testing, nothing released or in production, so there was nothing worth preserving compatibility for.
 
 **Typical wiring — full read → process → write round-trip:**
 ```
@@ -65,7 +59,7 @@ OpenClipReader.clip_name     → OpenClipWriter.clip_name     (same clip name)
 OpenClipReader.metadata      → OpenClipWriter.CLIP_METADATA (carry EXR header attrs, incl. colour space)
 OpenClipReader.fps           → OpenClipWriter.fps           (preserve frame rate)
 OpenClipReader.version_name  → OpenClipWriter.version_name  (optional: Writer follows Reader's version numbering)
-OpenClipReader.NORMAL/NORMAL_WORLD/DEPTH → OpenClipWriter.NORMAL/NORMAL_WORLD/DEPTH (optional: pass AOVs through unprocessed, or replace with graph-generated ones)
+OpenClipReader.aov_handle    → OpenClipAOVReader.aov_handle (one instance per AOV; chain OpenClipAOVWriter instances into OpenClipWriter.aov_chain to write them back out)
 # Writer clip_filename stays at default "$(path)/$(clip_name)"
 ```
 
@@ -86,10 +80,9 @@ OpenClip XML is always written as version 8 (v9 is not yet released by Autodesk)
 | `IMAGE` | `IMAGE` | RGB tensor batch |
 | `MASK` | `MASK` | Optional alpha; merged into EXR alpha channel if connected |
 | `CLIP_METADATA` | `CLIP_METADATA` | Optional EXR header metadata to write into output frames (e.g. tape name, timecodes). Only applied when connected; writer format settings (compression, etc.) always override any matching keys. |
-| `NORMAL` | `IMAGE` | Optional camera-space normals AOV to write, mirroring Reader's `NORMAL` output. |
-| `NORMAL_WORLD` | `IMAGE` | Optional world-space normals AOV, mirroring Reader's `NORMAL_WORLD` output. |
-| `DEPTH` | `MASK` | Optional depth AOV, mirroring Reader's `DEPTH` output. |
-| `aov_layout` | `COMBO` | `Multichannel` (default) appends any connected AOV channels onto the same EXR as beauty via explicit channel names. `Separate Files` writes one extra `<clip_name>_AOV_Normals.####.exr` / `_AOV_NormalsWorld` / `_AOV_Depth` per connected AOV, matching the Reader's sibling-file convention. Any AOV input connected with `file_format="PNG"` raises `ValueError` — PNG's 8-bit path would silently corrupt AOV data. |
+| `aov_chain` | `AOV_WRITE_CHAIN` | Optional. Feed the last `OpenClipAOVWriter` in a daisy-chain here — see `OpenClipAOVWriter` below. Each entry becomes a real named EXR part/subimage (or a separate sibling file, depending on `aov_layout`), not a channel-name convention. |
+| `colour_space` | `STRING` | Optional, default `"Rec.1886 Rec.709 - Display"` (added 2026-10-04 — previously a bare Python default, unwireable from any reader). Sets the `.clip` XML's own declared format colour space (`ClipFormat.colour_space`). This is **not** the same pipe as the colour-space round trip that already works via `CLIP_METADATA`'s `oiio:ColorSpace`/`openclip:ColorSpace` EXR header keys (see `CLAUDE.md`'s design-decisions table) — nothing currently reads `ClipFormat.colour_space` back out on the Reader side. |
+| `aov_layout` | `COMBO` | `Multichannel` (default) writes each `aov_chain` entry as its own named subimage in the same file as beauty — a true multi-part EXR, matching the real-world convention (see `lib/CLAUDE.md` "AOV Channel Handling"), not the old single-part-many-channels scheme. `Separate Files` writes one extra `<clip_name>_AOV_<name>.####.ext` sibling file per entry instead, `name` taken directly from the chain entry (sanitized for filesystem safety) rather than a fixed suffix table. A non-empty `aov_chain` with `file_format="PNG"` raises `ValueError` — PNG's 8-bit path would silently corrupt AOV data. |
 | `clip_path` | `STRING` | Folder path for the output package. If a `.clip` file path is supplied (e.g. wired from Reader), the parent directory is used automatically. |
 | `clip_name` | `STRING` | Clip name used for directory and file naming. Can be wired from Reader's `clip_name` output. |
 | `clip_filename` | `STRING` | Destination pattern; default `$(path)/$(clip_name).clip`. `$(path)` expands to `clip_path` (normalised to a folder); `$(clip_name)` expands to `clip_name`. Parentheses delimit the token explicitly, so literal text can follow directly with no ambiguity, e.g. `$(path)/$(clip_name)_clean.clip`. Supports `..` segments, e.g. `$(path)/../processed/$(clip_name).clip`. The `.clip` extension is stripped before passing the name to the layout builder, so the package is named correctly regardless. The resulting name is used for **both** the `.clip` file and the media sequence filenames (e.g. `$(clip_name)_clean` → `myshot_clean.clip` and `myshot_clean.0001.exr`); there's no way to rename only the `.clip` file. |
@@ -113,6 +106,72 @@ OpenClip XML is always written as version 8 (v9 is not yet released by Autodesk)
 
 ---
 
+### `OpenClipAOVReader` — `aov_reader.py`
+
+Extracts one named EXR part from an `OpenClipReader`'s `aov_handle`. Generic and lazy: `aov_handle` only locates the file(s), and nothing is pixel-decoded until this node executes and only for the one part named `part_name` — an unrequested part (e.g. a large Cryptomatte) is never touched. One instance per AOV you actually want; a clip with no AOVs costs zero of these.
+
+**Implementation notes:**
+- Same `IS_CHANGED` contract and reasoning as `OpenClipReader` — `aov_handle` is a linked input, so it arrives as `None` inside `IS_CHANGED`, and the node keeps its own process-local `_LAST_READ_PLAN[unique_id]` to fingerprint the file it actually read last time. Must never raise, for the same cache-poisoning reason as the Reader.
+- `part_name` is typed by hand, copied from `OpenClipReader.available_aovs` — no dropdown is possible.
+- Output shape follows one rule: a part with exactly 1 channel goes entirely to `matte`, `image` is `None` (nothing meaningfully multi-channel to return). A part with >=2 channels populates both — `image` is all of them, `matte` is the channel literally named `"R"` if present (looked up by name, never assumed positionally — this project's channel-by-name discipline), else channel 0. Real-world depth-like parts are a replicated scalar across R/G/B (confirmed against a real Flame render) — 3 channels on disk, so `image` *is* populated in that case, `matte` just happens to equal every channel of it.
+- Both outputs are `None`, not a zero-filled placeholder, if `part_name` isn't found in any frame of the handle's range — same "don't fabricate an absent value" contract the rest of this project's AOV handling already uses.
+
+**Inputs**
+
+| Name | Type | Description |
+|---|---|---|
+| `aov_handle` | `AOV_HANDLE` | From `OpenClipReader` |
+| `part_name` | `STRING` | EXR part `name` to extract — copy from `OpenClipReader.available_aovs` |
+
+**Outputs**
+
+| Name | Type | Description |
+|---|---|---|
+| `image` | `IMAGE` | All of the part's channels, batch `(N, H, W, C)` — `None` if the part is single-channel, or not found |
+| `matte` | `MASK` | The `"R"` channel (or the sole channel, if single-channel), batch `(N, H, W)` — `None` if not found |
+
+---
+
+### `OpenClipExrSequenceReader` — `exr_sequence_reader.py`
+
+Reads a plain EXR frame sequence with no `.clip` wrapper (Blender, Nuke). Only outputs what a plain sequence actually has (13, not `OpenClipReader`'s 16 — see `CLAUDE.md`'s design-decisions table, "outputs reversed 2026-10-04"): no `format_version`/`version_name`/`available_versions`, since there's no version concept here. `IMAGE`/`MASK` stay at the same slots (0/1) as `OpenClipReader` so it can stand in for it behind `HM_ImageSwitch`/`HM_MaskSwitch`; `aov_handle` still feeds `OpenClipAOVReader` the same way, just from a different slot index.
+
+**Implementation notes:**
+- `sequence_path` takes `name.####.exr` (any number of `#`) or `name.%04d.exr`; relative paths resolve against the input directory, like `clip_path`. `start_frame`/`end_frame` of `-1` mean the first/last frame found on disk; `frame_cap` works as on `OpenClipReader`.
+- `layer` picks the beauty from a single-part multilayer EXR by prefix (`CamelMatte.Combined` reads `CamelMatte.Combined.R/G/B/A`). Blank reads plain `R/G/B/A`. A wrong or missing layer raises with the file's layer list.
+- `clip_path`/`clip_name` are genuinely derived, not placeholders: `clip_path` is the sequence's folder and `clip_name` the filename stem before the frame token.
+- `fps` is a widget (Blender writes none into the EXR). A blank `colour_space` widget falls back to the header, the same way `OpenClipReader` reads it.
+- Same `IS_CHANGED` contract as `OpenClipReader`: it fingerprints the first frame, falls back to the last read when `sequence_path` is linked, and never raises.
+- Shares `web/openclip_reader.js` for the in-node `available_aovs` text; that script only draws the texts a node actually sends.
+
+---
+
+### `OpenClipAOVWriter` — `aov_writer.py`
+
+Adds one named AOV to a write chain. Daisy-chain as many instances as needed — each takes the previous one's `aov_chain` output as its own optional input — then feed the last one into `OpenClipWriter.aov_chain`. Same shape as Harmonize's own plate-pair nodes (`docs/guide-data.md` §15 there): one quantity per node, chainable, pass-through.
+
+**Implementation notes:**
+- Exactly one of `image`/`matte` must be connected — both or neither raises `ValueError`, since which one was meant is an artist decision, not something to guess at.
+- `matte` (a single-channel `MASK`) is written as one channel named `"R"`, so reading it back through `OpenClipAOVReader` lands it on the `matte` output again (the single-channel rule there doesn't care what the one channel is named, but `"R"` keeps the convention consistent both directions).
+- Duplicate names raise here (pinpointing the node that introduced the duplicate) and again in `OpenClipWriter`/`image_io.write_sequence` (in case a chain is ever built some other way) — defense in depth, not redundant by accident.
+
+**Inputs**
+
+| Name | Type | Description |
+|---|---|---|
+| `name` | `STRING` | Required. The EXR part name this entry will be written under. |
+| `image` | `IMAGE` (optional) | Written as that many channels. Connect exactly one of `image`/`matte`. |
+| `matte` | `MASK` (optional) | Written as a single channel named `"R"`. Connect exactly one of `image`/`matte`. |
+| `aov_chain` | `AOV_WRITE_CHAIN` (optional) | The previous `OpenClipAOVWriter` in the chain, if any. Omit on the first node. |
+
+**Outputs**
+
+| Name | Type | Description |
+|---|---|---|
+| `aov_chain` | `AOV_WRITE_CHAIN` | This entry appended to whatever chain came in — feed into the next `OpenClipAOVWriter`, or into `OpenClipWriter.aov_chain` if this is the last one. |
+
+---
+
 ### `OpenClipColourTransform` — `colour_transform.py`
 
 Applies an OCIO Display/View transform (i.e. a real "view transform" like Flame's, not a bare colour-space-to-colour-space conversion) to an `IMAGE` tensor. See `lib/CLAUDE.md` for why this distinction matters.
@@ -126,7 +185,7 @@ Applies an OCIO Display/View transform (i.e. a real "view transform" like Flame'
 | `input_colour_space` | `STRING` | Source colour space name as registered in the config, e.g. `Log3G10 RedWideGamutRGB` |
 | `view` | `STRING` | View transform name for the output display, e.g. `ACES 2.0 - SDR 100 nits (Rec.709)` (default). Matches Flame's per-clip view-transform picker; other values the config exposes (`Un-tone-mapped`, HDR views, etc.) work too. |
 | `direction` | `["forward", "inverse"]` | `forward` (default): `input_colour_space` → `(view)`, scene-referred to display-referred. `inverse`: reverses it — the incoming `IMAGE` is assumed to already be in `(view)` (e.g. a display-referred plate such as an AI-generated background) and is transformed back into `input_colour_space`, scene-referred. Added 2026-08-19 for the Harmonize sibling project's need to linearize a display-referred bg plate through a real named OCIO colour space rather than a bare transfer-function guess. |
-| `MASK` | `MASK` (optional) | Passed through unchanged; zero-filled if not connected |
+| `MASK` | `MASK` (optional) | Passed through unchanged; fully opaque (all-ones) if not connected -- absent matte means no matte, not "nothing here" (standard VFX convention, corrected 2026-09-23 from the old zero-filled default -- see lib/CLAUDE.md "Alpha Channel Handling") |
 
 **Outputs**
 
@@ -156,7 +215,7 @@ Added 2026-08-19, for Harmonize's need to reconcile two plates' colour primaries
 | `target_colour_space` | `ACEScg` / `Same as input (via pipe)` / curated list / `Custom...` | Destination colour space, picked not typed |
 | `custom_target_colour_space` | `STRING` | Real OCIO colour-space name, used only when `target_colour_space` is `Custom...` |
 | `same_as_input_colour_space` | `STRING` (optional, pipe) | Connect an `OpenClipReader.colour_space` output; used only when `target_colour_space` is `Same as input (via pipe)` |
-| `MASK` | `MASK` (optional) | Passed through unchanged; zero-filled if not connected |
+| `MASK` | `MASK` (optional) | Passed through unchanged; fully opaque (all-ones) if not connected -- absent matte means no matte, not "nothing here" (standard VFX convention, corrected 2026-09-23 from the old zero-filled default -- see lib/CLAUDE.md "Alpha Channel Handling") |
 
 **Outputs**
 

@@ -1,33 +1,40 @@
 import { app } from "../../scripts/app.js";
 import { ComfyWidgets } from "../../scripts/widgets.js";
 
-// Populates a read-only multiline widget on the Reader node with the
-// available_versions text sent back via the "ui" half of execute()'s
-// return value. Best-effort: if this breaks on a future ComfyUI frontend,
-// the same text is still available as the available_versions STRING
-// output, wireable to any text-preview node.
+// Populates read-only multiline widgets on the Reader node with text sent back via the
+// "ui" half of execute()'s return value: available_versions, and available_aovs (the
+// AOV probe -- copy a name from here into an OpenClipAOVReader's part_name). Best-effort:
+// if this breaks on a future ComfyUI frontend, both texts are still available as STRING
+// outputs, wireable to any text-preview node.
+const _TEXT_WIDGETS = ["available_versions", "available_aovs"];
+
 app.registerExtension({
     name: "OpenClip.Reader",
 
     async beforeRegisterNodeDef(nodeType, nodeData, _app) {
-        if (nodeData.name !== "OpenClipReader") {
+        if (!["OpenClipReader", "OpenClipExrSequenceReader"].includes(nodeData.name)) {
             return;
         }
         const onExecuted = nodeType.prototype.onExecuted;
         nodeType.prototype.onExecuted = function (message) {
             onExecuted?.apply(this, arguments);
-            _updateAvailableVersionsWidget(this, message);
+            // Only the texts this node sends: the EXR Sequence Reader has no versions.
+            for (const name of _TEXT_WIDGETS) {
+                if (message?.[name]) {
+                    _updateTextWidget(this, name, message);
+                }
+            }
         };
     },
 });
 
-function _updateAvailableVersionsWidget(node, message) {
-    const text = message?.available_versions?.[0] ?? "";
+function _updateTextWidget(node, name, message) {
+    const text = message?.[name]?.[0] ?? "";
 
-    let widget = node.widgets?.find((w) => w.name === "available_versions");
+    let widget = node.widgets?.find((w) => w.name === name);
     if (!widget) {
         widget = ComfyWidgets["STRING"](
-            node, "available_versions", ["STRING", { multiline: true }], app
+            node, name, ["STRING", { multiline: true }], app
         ).widget;
         widget.inputEl.readOnly = true;
         widget.options = widget.options || {};

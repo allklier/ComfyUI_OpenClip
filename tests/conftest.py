@@ -83,10 +83,13 @@ def _make_pixels(nchannels: int) -> np.ndarray:
 
 # --- AOV fixtures ---
 #
-# Single-part EXR, dotted <layer>.<channel> naming per EXR_REQUIREMENTS.md's convention
-# table, matching ComfyUI_Harmonize/tests/generate_synthetic_exr.py exactly.
-
-AOV_MULTICHANNEL_NAMES = ("R", "G", "B", "A", "N.X", "N.Y", "N.Z", "Nw.X", "Nw.Y", "Nw.Z", "Z")
+# True multi-part EXR, generic R/G/B channel names per part, identity carried only by
+# each part's `name` attribute -- the real-world convention (confirmed against an actual
+# Flame render whose AOVs were imported from another DCC). See lib/CLAUDE.md "AOV Channel
+# Handling". There is no dotted-channel or separate-sibling-file convention to fixture
+# for any more -- those were this project's own synthetic-fixture inventions, never
+# something a real render produced, and were dropped 2026-09-23 along with the old
+# fixed-three-AOV Reader/Writer interface.
 
 
 def _make_aov_pixels() -> dict[str, np.ndarray]:
@@ -99,48 +102,10 @@ def _make_aov_pixels() -> dict[str, np.ndarray]:
     }
 
 
-def _write_named_exr(path: Path, pixels: np.ndarray, channelnames: tuple) -> None:
-    import OpenImageIO as oiio
-
-    spec = oiio.ImageSpec(IMAGE_SIZE, IMAGE_SIZE, pixels.shape[-1], oiio.FLOAT)
-    spec.channelnames = channelnames
-    spec["compression"] = "zip"
-    out = oiio.ImageOutput.create(str(path))
-    assert out, f"OIIO could not create: {path}"
-    assert out.open(str(path), spec), f"OIIO open failed: {path}"
-    assert out.write_image(pixels.astype(np.float32)), f"OIIO write_image failed: {path}"
-    out.close()
-
-
 @pytest.fixture(scope="session")
 def aov_pixels() -> dict[str, np.ndarray]:
-    """The exact pixel arrays baked into aov_fixtures, for tests to assert against."""
+    """The exact pixel arrays baked into aov_multipart_fixtures, for tests to assert against."""
     return _make_aov_pixels()
-
-
-@pytest.fixture(scope="session")
-def aov_fixtures(tmp_path_factory, aov_pixels) -> Path:
-    """Both AOV layouts EXR_REQUIREMENTS.md describes, plus a beauty-only file with no AOVs.
-
-    Pattern: aov_fixtures / "aov_multi.%04d.exr"       -> single multichannel file, frame 0
-             aov_fixtures / "aov_sep.%04d.exr"          -> beauty half of the separate-file set
-             aov_fixtures / "aov_sep_AOV_Normals.%04d.exr" / "..._NormalsWorld..." / "..._Depth..."
-             aov_fixtures / "aov_none.%04d.exr"         -> beauty only, no AOV channels/siblings
-    """
-    out = tmp_path_factory.mktemp("aov_fixtures")
-    p = aov_pixels
-
-    multi = np.concatenate([p["beauty"], p["normal"], p["normal_world"], p["depth"]], axis=-1)
-    _write_named_exr(out / "aov_multi.0000.exr", multi, AOV_MULTICHANNEL_NAMES)
-
-    _write_named_exr(out / "aov_sep.0000.exr", p["beauty"], ("R", "G", "B", "A"))
-    _write_named_exr(out / "aov_sep_AOV_Normals.0000.exr", p["normal"], ("N.X", "N.Y", "N.Z"))
-    _write_named_exr(out / "aov_sep_AOV_NormalsWorld.0000.exr", p["normal_world"], ("Nw.X", "Nw.Y", "Nw.Z"))
-    _write_named_exr(out / "aov_sep_AOV_Depth.0000.exr", p["depth"], ("Z",))
-
-    _write_named_exr(out / "aov_none.0000.exr", p["beauty"], ("R", "G", "B", "A"))
-
-    return out
 
 
 def _write_multipart_exr(path: Path, parts: list[tuple[np.ndarray, tuple, str]]) -> None:
@@ -180,10 +145,10 @@ def aov_multipart_fixtures(tmp_path_factory, aov_pixels) -> Path:
     """A true multi-part EXR matching the real-world part-name convention confirmed
     against an actual Flame render (AOVs imported from Cinema 4D): every part uses
     generic R,G,B channel names, and the AOV's identity is carried only by the EXR part
-    `name` attribute — not the dotted layer.channel convention aov_fixtures covers. Depth
-    is a replicated scalar across R,G,B (also confirmed empirically against a real file).
-    Includes a Cryptomatte-like extra part (also generic R,G,B, indistinguishable from a
-    real AOV by channel name alone) that no default part-name target matches.
+    `name` attribute. Depth is a replicated scalar across R,G,B (also confirmed
+    empirically against a real file). Includes a Cryptomatte-like extra part (also
+    generic R,G,B, indistinguishable from a real AOV by channel name alone) that a probe
+    lists but nothing decodes unless a test explicitly asks for it by name.
 
     Pattern: aov_multipart_fixtures / "aov_multipart.%04d.exr"
     """
@@ -197,4 +162,42 @@ def aov_multipart_fixtures(tmp_path_factory, aov_pixels) -> Path:
         (p["normal"], ("R", "G", "B"), "normals"),
         (crypto, ("R", "G", "B"), "cryptomatte"),
     ])
+    return out
+
+
+# Channel layout of a real Blender 5.2 multilayer render (CGTestPlates/InteriorCamel),
+# single part, in the alphabetical order Blender writes them.
+BLENDER_CHANNELS: tuple[str, ...] = (
+    "CamelMatte.Combined.A", "CamelMatte.Combined.B", "CamelMatte.Combined.G", "CamelMatte.Combined.R",
+    "ViewLayer.Combined.A", "ViewLayer.Combined.B", "ViewLayer.Combined.G", "ViewLayer.Combined.R",
+    "ViewLayer.Depth.Z",
+    "ViewLayer.Noisy Image.A", "ViewLayer.Noisy Image.B", "ViewLayer.Noisy Image.G", "ViewLayer.Noisy Image.R",
+    "ViewLayer.Normal.X", "ViewLayer.Normal.Y", "ViewLayer.Normal.Z",
+)
+
+
+def blender_frame_pixels(frame: int) -> dict[str, np.ndarray]:
+    """Distinct, frame-dependent values per channel, keyed by channel name."""
+    rng = np.random.default_rng(seed=100 + frame)
+    return {n: rng.random((IMAGE_SIZE, IMAGE_SIZE)).astype(np.float32) - 0.5 for n in BLENDER_CHANNELS}
+
+
+@pytest.fixture(scope="session")
+def blender_multilayer_fixtures(tmp_path_factory) -> Path:
+    """Three frames (1-3) of a Blender-style single-part multilayer EXR, written with the
+    '####' naming Blender uses: blender_multilayer_fixtures / "render.0001.exr" etc.
+    Tagged lin_ap1_scene, as Blender 5.2 tags ACEScg renders."""
+    import OpenImageIO as oiio
+
+    out = tmp_path_factory.mktemp("blender_multilayer_fixtures")
+    for frame in (1, 2, 3):
+        px = blender_frame_pixels(frame)
+        spec = oiio.ImageSpec(IMAGE_SIZE, IMAGE_SIZE, len(BLENDER_CHANNELS), oiio.FLOAT)
+        spec.channelnames = BLENDER_CHANNELS
+        spec.attribute("oiio:ColorSpace", "lin_ap1_scene")
+        path = str(out / f"render.{frame:04d}.exr")
+        o = oiio.ImageOutput.create(path)
+        assert o and o.open(path, spec), f"OIIO open failed: {path}"
+        assert o.write_image(np.stack([px[n] for n in BLENDER_CHANNELS], axis=-1)), f"write failed: {path}"
+        o.close()
     return out

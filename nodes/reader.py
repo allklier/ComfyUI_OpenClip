@@ -73,16 +73,13 @@ class OpenClipReader:
                 # by probing for the media directory relative to the clip file.
                 "path_from": ("STRING", {"default": ""}),
                 "path_to": ("STRING", {"default": ""}),
-                # Part-name-keyed AOV convention: a multi-part EXR where every part uses
-                # generic R/G/B channel names and the AOV is identified only by the EXR
-                # part `name` attribute (confirmed against a real Flame render whose AOVs
-                # were imported from another DCC) — see lib/CLAUDE.md "AOV Channel
-                # Handling". Empty string disables lookup for that AOV. normal_raw_layer_name
-                # carries a normals-like part whose camera/world space this repo does not
-                # try to determine; a downstream node should apply that labelling.
-                "depth_layer_name": ("STRING", {"default": image_io.DEFAULT_DEPTH_PART_NAME}),
-                "normal_world_layer_name": ("STRING", {"default": image_io.DEFAULT_NORMAL_WORLD_PART_NAME}),
-                "normal_raw_layer_name": ("STRING", {"default": image_io.DEFAULT_NORMAL_RAW_PART_NAME}),
+                # Caps the read to at most this many frames from the resolved start
+                # (the clip's native start when start_frame is -1) -- independent of
+                # each clip's own frame numbering, which varies (Flame commonly starts
+                # at 1001, but not always). -1 disables the cap. Appended last, not
+                # placed next to start_frame/end_frame where it semantically belongs,
+                # so existing saved workflows' positional widgets_values stay valid.
+                "frame_cap": ("INT", {"default": -1, "min": -1, "max": 999999}),
             },
             # Needed by IS_CHANGED, which is handed UNIQUE_ID even though it is handed
             # nothing else useful when inputs are linked. Hidden inputs are a separate
@@ -91,8 +88,8 @@ class OpenClipReader:
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK", "INT", "INT", "INT", "STRING", "STRING", "INT", "STRING", "STRING", "CLIP_METADATA", "IMAGE", "IMAGE", "MASK", "IMAGE", "STRING", "FLOAT", "STRING")
-    RETURN_NAMES = ("IMAGE", "MASK", "frame_count", "width", "height", "format_version", "version_name", "start_frame", "clip_path", "clip_name", "metadata", "NORMAL", "NORMAL_WORLD", "DEPTH", "NORMAL_RAW", "colour_space", "fps", "available_versions")
+    RETURN_TYPES = ("IMAGE", "MASK", "INT", "INT", "INT", "STRING", "STRING", "INT", "STRING", "STRING", "CLIP_METADATA", "AOV_HANDLE", "STRING", "FLOAT", "STRING", "STRING")
+    RETURN_NAMES = ("IMAGE", "MASK", "frame_count", "width", "height", "format_version", "version_name", "start_frame", "clip_path", "clip_name", "metadata", "aov_handle", "colour_space", "fps", "available_versions", "available_aovs")
     OUTPUT_NODE = True
     FUNCTION = "execute"
     CATEGORY = "OpenClip"
@@ -105,14 +102,14 @@ class OpenClipReader:
         end_frame: int,
         path_from: str,
         path_to: str,
-        depth_layer_name: str = image_io.DEFAULT_DEPTH_PART_NAME,
-        normal_world_layer_name: str = image_io.DEFAULT_NORMAL_WORLD_PART_NAME,
-        normal_raw_layer_name: str = image_io.DEFAULT_NORMAL_RAW_PART_NAME,
+        frame_cap: int = -1,
         unique_id=None,
     ):
         clip_path, parsed, clip_version, abs_pattern, resolved_start, resolved_end = _resolve_read_plan(
             clip_path, version, start_frame, end_frame, path_from, path_to
         )
+        if frame_cap > -1:
+            resolved_end = min(resolved_end, resolved_start + frame_cap - 1)
         # Remember what this node instance actually read, so IS_CHANGED can stat these
         # files on the next queue even when it cannot resolve them from its own arguments.
         if unique_id is not None:
@@ -120,12 +117,7 @@ class OpenClipReader:
         fps_num, fps_den = openclip_xml.fps_to_rational(openclip_xml.read_format(clip_path).fps)
         fps = fps_num / fps_den
 
-        images, masks, aovs, metadata = image_io.read_sequence_with_aovs(
-            abs_pattern, resolved_start, resolved_end, load_alpha=True,
-            depth_part_name=depth_layer_name.strip(),
-            normal_world_part_name=normal_world_layer_name.strip(),
-            normal_raw_part_name=normal_raw_layer_name.strip(),
-        )
+        images, masks, metadata = image_io.read_sequence(abs_pattern, resolved_start, resolved_end, load_alpha=True)
         # Prefer the verbatim backup key over "oiio:ColorSpace" itself — OIIO's EXR plugin
         # silently renames/drops that key for names outside its built-in registry (e.g.
         # camera log profiles); see image_io.COLOUR_SPACE_BACKUP_KEY.
@@ -133,13 +125,17 @@ class OpenClipReader:
 
         frame_count, height, width = images.shape[0], images.shape[1], images.shape[2]
         available_versions = _format_available_versions(parsed.versions.keys(), parsed.current_version)
+        aov_handle = {"abs_pattern": abs_pattern, "start_frame": resolved_start, "end_frame": resolved_end, "clip_path": clip_path}
+        # Header-only (no pixel decode) -- see image_io.probe_aov_names. One representative
+        # frame, same frame IS_CHANGED already fingerprints, assumes AOV presence doesn't
+        # vary frame to frame (matching read_named_part's own whole-sequence semantics).
+        available_aovs = "\n".join(image_io.probe_aov_names(abs_pattern, resolved_start))
         return {
-            "ui": {"available_versions": [available_versions]},
+            "ui": {"available_versions": [available_versions], "available_aovs": [available_aovs]},
             "result": (
                 images, masks, frame_count, width, height, parsed.schema_version,
                 clip_version.name, resolved_start, clip_path, parsed.clip_name, metadata,
-                aovs["normal"], aovs["normal_world"], aovs["depth"], aovs["normal_raw"],
-                colour_space, fps, available_versions,
+                aov_handle, colour_space, fps, available_versions, available_aovs,
             ),
         }
 

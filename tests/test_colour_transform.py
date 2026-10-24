@@ -150,13 +150,15 @@ def test_node_mask_passthrough():
     assert torch.allclose(out_mask, mask)
 
 
-def test_node_no_mask_returns_zeros():
+def test_node_no_mask_returns_ones():
+    # No matte connected means no matte, not "nothing here" -- defaults to
+    # fully opaque (VFX convention).
     node = OpenClipColourTransform()
     images = torch.full((1, 4, 4, 3), 0.25)
     _, out_mask = node.execute(IMAGE=images, ocio_config=FIXTURE_CONFIG,
                                input_colour_space="linear", view="Raw")
     assert out_mask.shape == (1, 4, 4)
-    assert out_mask.sum() == 0
+    assert torch.all(out_mask == 1.0)
 
 
 def test_node_raises_on_empty_config():

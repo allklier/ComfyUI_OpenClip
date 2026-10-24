@@ -82,7 +82,9 @@ class OpenClipColourTransform:
         output = _ct.apply_colour_transform(
             IMAGE, ocio_config, input_colour_space, view=view, inverse=(direction == "inverse")
         )
-        out_mask = MASK if MASK is not None else torch.zeros(
+        # No mask connected means no matte, not "nothing here" -- standard VFX
+        # convention treats an absent matte as fully opaque.
+        out_mask = MASK if MASK is not None else torch.ones(
             IMAGE.shape[0], IMAGE.shape[1], IMAGE.shape[2]
         )
         return (output, out_mask)

@@ -108,6 +108,21 @@ def test_node_custom_source():
     assert torch.allclose(out_image, torch.full_like(out_image, 0.5), atol=1e-5)
 
 
+def test_node_no_mask_returns_ones():
+    # No matte connected means no matte, not "nothing here" -- defaults to
+    # fully opaque (VFX convention), same as image_io.py's no-alpha-channel
+    # default and OpenClipColourTransform's own no-mask default.
+    node = OpenClipColourSpaceTransform()
+    images = torch.full((1, 4, 4, 3), 0.25)
+    _, out_mask = node.execute(
+        IMAGE=images, ocio_config=FIXTURE_CONFIG, source=CUSTOM_LABEL,
+        custom_source="scaled_2x", target_colour_space=CUSTOM_LABEL,
+        custom_target_colour_space="linear",
+    )
+    assert out_mask.shape == (1, 4, 4)
+    assert torch.all(out_mask == 1.0)
+
+
 def test_node_custom_without_value_raises():
     node = OpenClipColourSpaceTransform()
     with pytest.raises(ValueError, match="custom_source"):

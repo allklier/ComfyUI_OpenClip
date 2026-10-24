@@ -119,7 +119,7 @@ Path tokens in the XML are always relative to the `.clip` file, so both layouts 
 
 ## Alpha Channel Handling — `image_io.py`
 
-- `read_sequence()` returns a zero-filled MASK tensor when the source has no alpha channel, so callers always receive a valid tensor regardless of source format.
+- `read_sequence()` returns a **one-filled (fully opaque) MASK tensor** when the source has no alpha channel, so callers always receive a valid tensor regardless of source format. **Corrected 2026-09-23** (was zero-filled): standard VFX convention (Nuke, Flame, After Effects) treats an absent alpha channel as fully opaque, not as zero coverage — a plate with no matte is a complete plate, not an invisible one. The old zero-default was a real bug, not a considered choice: it borrowed the "don't fabricate a value" reasoning from the missing-AOV case (see below), which doesn't transfer, since depth/normals have no sensible default to fabricate while alpha does. Found via a real failure: a generated background plate with no alpha, wired into `HM_MatchLuminanceRange`'s `target_mask` downstream in Harmonize, zeroed out every pixel and raised "no valid pixels to measure."
 - `write_sequence()` accepts an optional MASK. If provided, it is combined with the IMAGE into a 4-channel RGBA EXR. If absent, a 3-channel RGB EXR is written.
 - PNG supports RGBA natively via OIIO.
 
@@ -127,21 +127,78 @@ Path tokens in the XML are always relative to the `.clip` file, so both layouts 
 
 ## AOV Channel Handling — `image_io.py`
 
-Per `EXR_REQUIREMENTS.md`'s convention table, AOV channels are single-part EXR with dotted `<layer>.<channel>` naming: `N.X`/`N.Y`/`N.Z` (camera-space normals), `Nw.X`/`Nw.Y`/`Nw.Z` (world-space normals), `Z` (depth). `AOV_CHANNELS` maps each Reader output key (`"normal"`, `"normal_world"`, `"depth"`) to its channel-name group.
+**Redesigned 2026-09-23: generic, part-name-keyed, matching the real-world convention
+only.** The old interface (a fixed three AOVs — `normal`/`normal_world`/`depth` — a
+dotted single-part `<layer>.<channel>` convention, and a separate-sibling-file
+convention) was this project's own synthetic-fixture invention from before any real
+file had been inspected. A real Flame render (beauty + depth + normals + Cryptomatte,
+AOVs imported from another DCC, Cinema 4D) confirmed the real convention is different
+in every particular: true multi-part EXR, every part using plain generic `R,G,B`
+channel names — no dotted `N.X`/`Z` anywhere — with the AOV's identity carried entirely
+by the EXR part's own `name` attribute (`"depth"`, `"normals"`, `"cryptomatte"`, ...).
+Explicit user decision (2026-09-23): drop the dotted and sibling-file conventions
+rather than keep them alongside the real one — AOVs had only been used in
+development/testing, nothing released or in production, so there was nothing worth
+preserving compatibility for, and building against the confirmed real convention beats
+speculatively supporting one that's never actually been observed in the wild.
 
-**Channels are always addressed by name, never index.** OpenEXR does not preserve channel write order, and OIIO reorders on read — confirmed against the installed OIIO 3.1.15 by round-tripping an actual file: writing `R,G,B,A,N.X,N.Y,N.Z,Nw.X,Nw.Y,Nw.Z,Z` reads back as `R,G,B,A,Z,N.X,N.Y,N.Z,Nw.X,Nw.Y,Nw.Z` (`spec.channelindex('N.X') == 5`). `_extract_named_channels()` resolves every channel group (including plain R/G/B/A) via `spec.channelnames` at read time; a group is all-or-nothing — if any one of its names is absent, the whole group is treated as not present, never partially filled.
+**Single-part dot-named layers, added 2026-09-28.** Blender's multilayer EXR is a real render that *does* use dotted names: one part, `<view layer>.<pass>.<channel>`, no plain `R/G/B`. `probe_aov_names` lists each distinct prefix in subimage 0 (`_channel_layers`), before the named parts. `read_named_part` tries named parts first; if none matches, `_read_channel_layer_frame` reopens the file and returns subimage 0's `<name>.<c>` channels with the prefix stripped, so `(image, matte)` follows the same rules as a part. The prefix must match whole (`ViewLayer` does not match `ViewLayer.Normal.X`). `read_sequence(..., layer=...)` reads the beauty and alpha from `<layer>.R/G/B/A`.
 
-**Two on-disk layouts, auto-detected, no toggle:** `read_sequence_with_aovs()` tries each AOV group on the beauty file itself first (single multichannel EXR), then falls back to a sibling `<name>_AOV_<Suffix>.####.ext` file (separate-file-per-AOV convention — suffixes fixed in `AOV_SUFFIXES`, matching `ComfyUI_Harmonize/tests/generate_synthetic_exr.py` exactly), then zero-fills at the beauty frame's H×W if neither has it. `_aov_sibling_pattern()` builds the sibling path pattern by inserting the suffix into the beauty pattern's stem, immediately before the frame token (or before the extension for a static/no-frame-token path — the same Flame `encoding="file"` still-image case `openclip_xml.py` handles). This mirrors the alpha-channel precedent above (zero-fill on absence, no toggle) rather than reintroducing the removed `load_alpha` toggle's silent-default-off bug class.
+**Channels are always addressed by name, never index.** OpenEXR does not preserve
+channel write order, and OIIO reorders on read — confirmed against the installed OIIO
+3.1.15 by round-tripping an actual file: writing `R,G,B,A,N.X,N.Y,N.Z,Nw.X,Nw.Y,Nw.Z,Z`
+reads back as `R,G,B,A,Z,N.X,N.Y,N.Z,Nw.X,Nw.Y,Nw.Z` (`spec.channelindex('N.X') == 5`).
+`_extract_named_channels()` resolves R/G/B/A via `spec.channelnames` at read time for
+beauty; `_split_image_matte()` does the equivalent for a generic AOV part, looking up
+`"R"` by name rather than assuming channel 0 is it.
 
-**Multi-part EXR (real Flame renders) — a second, part-name-keyed convention.** `EXR_REQUIREMENTS.md` flagged "single-part dotted vs. true multi-part" as unconfirmed. A real Flame render (beauty + depth + normals + Cryptomatte) confirmed it's multi-part, but **not** in the way first assumed: every part uses plain generic `R,G,B` channel names — there is no dotted `N.X`/`Z` anywhere in the file. The AOV's identity is carried entirely by the EXR part's own `name` attribute (`"depth"`, `"normals"`, `"cryptomatte"`, ...). This makes sense once traced back: Flame didn't generate these AOVs itself — they were imported from another DCC (Cinema 4D in the confirmed case) — so the dotted layer.channel convention (which is this project's own synthetic-fixture convention, matching `ComfyUI_Harmonize/tests/generate_synthetic_exr.py`) never applied to this data at all.
+**Two functions replace the old fixed-AOV read path — both generic over AOV name.**
 
-Because every part shares the same generic channel names, a Cryptomatte part is **indistinguishable from a real AOV by channel name alone** — the channel-name-based "skip if nothing known" optimization from an earlier version of this fix was actively wrong here (it couldn't tell Cryptomatte apart from depth/normals, so it decoded Cryptomatte's often-large data on every read). The fix instead identifies parts by **name**: `_read_frame()` reads subimage 0 as beauty/alpha (unchanged, and still tries the dotted-channel AOV convention against subimage 0's own channels first), then — only if at least one of `depth_part_name`/`normal_world_part_name`/`normal_raw_part_name` is non-empty — walks the remaining subimages via `seek_subimage()`, comparing each one's cheap `spec()`-level `name` attribute against those three targets and decoding (`read_image()`) only a match. An unmatched part (Cryptomatte, or anything else) is never pixel-decoded.
+- **`probe_aov_names(path_pattern, frame_num)`** lists every named subimage beyond 0
+  (beauty) for one representative frame — header-only (`spec()`, never `read_image()`),
+  so it's cheap even when a part (Cryptomatte) is large. This is what
+  `OpenClipReader.available_aovs` and its in-node display (`web/openclip_reader.js`)
+  are built on.
+- **`read_named_part(path_pattern, start_frame, end_frame, part_name)`** decodes one
+  named part across a frame range, lazily — nothing is pixel-decoded until this is
+  called, and only for the one requested name, so an unrequested part (Cryptomatte
+  again) is never touched regardless of how many other AOVs exist in the file. Returns
+  `(image, matte)`: a part with exactly 1 channel populates `matte` only (`image` is
+  `None` — nothing meaningfully multi-channel to return); a part with >=2 channels
+  populates both, `matte` being the `"R"` channel if present (else channel 0).
+  Real-world depth-like parts are a **replicated scalar across R/G/B** (confirmed
+  empirically: `R==G==B` in the real file), so they're 3-channel on disk and populate
+  both outputs, `matte` just happening to equal every channel. Whole-sequence
+  presence, not per-frame: found in at least one frame of the range counts the AOV as
+  present, and any individual frame that happens to lack it is zero-filled just for
+  that frame — carried over unchanged from the pre-redesign behaviour, since it's a
+  correct rule regardless of the interface shape around it.
 
-`depth_part_name` (default `"depth"`) and `normal_raw_part_name` (default `"normals"`) match the one real file investigated so far; `normal_world_part_name` defaults to `""` (disabled) since that file had no separate world-space part. **Depth's data is a replicated scalar across R/G/B** (confirmed empirically: `R==G==B` everywhere in the real file) — read as channel 0. **This repo does not try to determine whether an ambiguous normals-like part is camera-space or world-space** — Flame/this pipeline has no way to know, since the data didn't originate there. That part is exposed as `normal_raw` (3-channel, unlabeled) rather than being routed into the space-committed `normal`/`normal_world` groups, which stay zero-filled unless a distinctly-named part matches `normal_world_part_name` (or the dotted-channel convention finds a `normal`/`normal_world` group on subimage 0). Space labelling of `normal_raw` is explicitly left to the consuming project (Harmonize) via its own node/toggle — an explicit user decision, not a default this repo picks, since guessing space would risk exactly the "plausible-looking wrong result" failure class this whole feature exists to prevent.
+**This repo makes no attempt to label which AOV is which, or what space a normals-like
+part is in** — that was always true (see the old `normal_raw` output's reasoning, now
+moot since there's no `normal`/`normal_world`/`normal_raw` distinction to draw at all)
+and remains true here: `read_named_part()` returns exactly the channels a part has,
+under exactly the name it was asked for, and leaves every semantic question — is this
+depth or AO, is this normals camera-space or world-space — to the consuming project.
+Declaring that meaning, not inferring it, is `OpenClipAOVReader`'s `part_name` widget
+being typed by hand off the probe list, not a dropdown of "known" AOV kinds.
 
-`_read_named_channels_if_exists()` (the separate-file sibling case) does **not** get this part-name treatment — no real or synthetic sibling AOV file has been observed to be multi-part, so it stays a plain single-subimage read.
-
-`write_sequence()`'s optional `aovs`/`aov_layout` parameters mirror the read side: `"Multichannel"` (default) appends AOV channels onto the same EXR as beauty via explicit `spec.channelnames`; `"Separate Files"` writes one extra file per present AOV group at the same sibling-pattern convention. AOVs require `file_format="EXR"` — PNG's 8-bit clamp-to-uint8 write path would silently corrupt normals (signed, ~-1..1) or depth (unbounded), so `write_sequence()` raises `ValueError` if both are requested together.
+**Write side is symmetric.** `write_sequence()`'s `aov_entries` parameter is a list of
+`(name, image, matte)` tuples (exactly one of `image`/`matte` populated per entry).
+`aov_layout="Multichannel"` (default) writes each entry as its own named subimage in
+the *same* file as beauty — a real multi-part EXR via `_write_multipart_exr()`
+(`ImageOutput.open(filename, [spec, ...])` then `write_image()` per subimage, the
+subsequent ones via `open(filename, spec_i, "AppendSubimage")` — verified against the
+installed OIIO 3.1.15 with a real round-trip before writing this, not assumed from
+docs). This is a real change from the pre-redesign writer, which only ever wrote a
+single multichannel subimage (the old dotted-convention shape) regardless of the
+`"Multichannel"` layout's name — the new write path actually produces what the reader
+now expects. `aov_layout="Separate Files"` writes one sibling
+`<stem>_AOV_<name>.####.ext` file per entry instead (name taken directly from the
+entry, sanitized for filesystem safety, not a fixed suffix table). AOVs require
+`file_format="EXR"` — PNG's 8-bit clamp-to-uint8 write path would silently corrupt
+normals (signed, ~-1..1) or depth (unbounded). Duplicate names in `aov_entries` raise
+`ValueError`.
 
 ---
 
