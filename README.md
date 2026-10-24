@@ -8,13 +8,13 @@ Frames rendered in ComfyUI are written as versioned OpenClip packages that Flame
 
 ## Quick Start
 
-The easist way to use these nodes is to add a OpenClip Reader node at the beginning of the workflow. Point it at an existing .clip file rendered from Frame, leave version as 'current', and use the Image output.
+The easiest way to use these nodes is to add an OpenClip Reader node at the beginning of the workflow. Point it at an existing .clip file rendered from Flame, leave version as 'current', and use the IMAGE output. (For a plain `name.####.exr` sequence with no `.clip`, such as a Blender render, use the OpenClip EXR Sequence Reader instead.)
 
-Then at the end of the workflow add a OpenClip Writer node, connecting the finished image into the Image input. Leave the vesion on the 'next' default, pipe the clip_path, clip_name, metadata, and fps values through from the reader, add "_updated" at the end of the clip_name pattern in the OpenClip Writer and all should be well.
+Then at the end of the workflow add a OpenClip Writer node, connecting the finished image into the Image input. Leave the version on the 'next' default, pipe the clip_path, clip_name, metadata, and fps values through from the reader, add "_updated" at the end of the clip_name pattern in the OpenClip Writer and all should be well.
 
 The rest are options for more advanced workflows.
 
-If a specific version should be read, rather than 'current'. Attach a Preview Text node to the 'available versions' output of teh reader and 'run' it. That will list all available version names. Pick one and copy/paste it into the 'version' input.
+If a specific version should be read, rather than 'current', run the Reader once. The available versions are listed inside the node (and on its `available_versions` output, which you can wire to a Preview Text node). Pick one and copy/paste it into the 'version' input.
 
 ## Nodes
 
@@ -28,24 +28,26 @@ Various options can be set to configure the clip and the EXR file generation. If
 
 The write node has the follwing inputs/settings:
 
-- Image: takes an image sequence (if the workflow generates video rather than image batch, use a 'Get Video Components' node to extract an image bath and accompanying parameters).
-- Mask: An alpha channel to go with the EXR files.
-- aov_chain: AOVs from OpenClip AOV Writer nodes to be written alongside the beauty pass.
-- colour_space: the colour space declared in the .clip XML (can be wired from a reader).
-- ClipMetadata: The standard text structure for metadata. The most common use case is to pipe it through from the read node to maintain all metadata in the pipeline.
-- clip_path: where the open clip files will be stored.
-- clip_name: Logical ClipName.
-- clip_filename: filename of the .clip file. This uses a pattern, referencing the other clip settings to construct the full filename. Default is: $(path)/$(clip_name).clip.
-- version_name: the text string of the version. the default of 'next' will allocate the next version, or start with v001.
-- overwrite: whether existing versions are allowed to be overwritten. If the latest version is 'v003', and the version_name is also set to 'v003', the existing version 'v003' will be deleted an a new version will be written. If disabled, writing an existing version number results in an error.
-include_version_in_filename: whether to include the 'v003' version in the EXR filenaming convention. As each version is written into separate folders, this is option, but common practice in some pipelines.
-fps: the frame rate to place into the clip metadata.
-start_frame: the number of the first written frame
-frame_padding: how many zeros to put into front of short frame numbers.
-file_format: choose between EXR and PNG
-exr_bit_depth: EXR specific.
-exr_compression: EXR specific.
-publihs: if selected, a copy of the json file of the current ComfyUI workflow will be copied into the version folder.
+- IMAGE: takes an image sequence (if the workflow generates video rather than image batch, use a 'Get Video Components' node to extract an image batch and accompanying parameters).
+- MASK (optional): an alpha channel to go with the EXR files.
+- CLIP_METADATA (optional): the standard metadata structure. The most common use case is to pipe it through from the Reader to maintain all metadata in the pipeline.
+- aov_chain (optional): AOVs to write alongside the beauty pass, built with OpenClip AOV Writer nodes.
+- colour_space (optional): the colour space declared in the .clip XML; can be wired from a Reader.
+- clip_path: where the OpenClip files will be stored.
+- clip_name: logical clip name.
+- clip_filename: filename of the .clip file. This uses a pattern, referencing the other clip settings to construct the full filename. Default is: `$(path)/$(clip_name).clip`.
+- version_name: the text string of the version. The default of 'next' will allocate the next version, or start with v001.
+- overwrite: whether existing versions are allowed to be overwritten. If the latest version is 'v003', and the version_name is also set to 'v003', the existing version 'v003' will be deleted and a new version will be written. If disabled, writing an existing version number results in an error.
+- include_version_in_filename: whether to include the 'v003' version in the EXR filenaming convention. As each version is written into separate folders, this is optional, but common practice in some pipelines.
+- fps: the frame rate to place into the clip metadata (must match a standard rate such as 23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60).
+- start_frame: the number of the first written frame.
+- frame_padding: how many zeros to put in front of short frame numbers.
+- file_format: choose between EXR and PNG (AOVs require EXR).
+- exr_bit_depth, exr_compression: EXR specific.
+- aov_layout: `Multichannel` writes each AOV as a named part inside the same EXR file; `Separate Files` writes one extra `<name>_AOV_<aov>.####.exr` file per AOV.
+- publish: if selected, a copy of the JSON file of the current ComfyUI workflow will be copied into the version folder.
+
+The Writer checks the frame rate and the format of an existing clip (size, frame rate, file format) before writing anything, so a refused run leaves nothing on disk.
 
 ### OpenClip Reader
 Reads any version from an existing `.clip` file and returns an IMAGE and MASK tensor batch. Also owns version browsing/selection — there is no separate selector node.
@@ -54,7 +56,9 @@ The reader node has the following inputs/settings:
 
 - clip_path: the full filename of the .clip file to be read.
 - version: the version to be read (defaults to 'current', based on which version is marked as current in .clip file)
-- end_frame/start_frame: select a specific frame range to be read
+- end_frame/start_frame: select a specific frame range to be read (-1 means the clip's own range)
+- path_from/path_to: replace a path prefix in the media paths stored in the .clip (leave blank to auto-detect, e.g. when a clip made on another machine points at a different mount).
+- frame_cap: read at most this many frames (-1 = no cap).
 
 The node as the following outputs:
 
@@ -132,8 +136,7 @@ If you don't need the colour transform nodes, `opencolorio` can be skipped — t
 
 ## Installation
 
-**Via ComfyUI Manager** (recommended once a release is published):
-add the repo URL in the Manager's custom node installer.
+**Via ComfyUI Manager / the ComfyUI Registry** (recommended): search for "OpenClip" in the Manager, or run `comfy node install comfy-openclip`.
 
 **Manual:**
 ```bash
@@ -147,6 +150,8 @@ Restart ComfyUI. The nodes appear under the **OpenClip** category.
 
 ## Notes
 
-- XML is always written as OpenClip v8
+- XML is always written as OpenClip v8 (v8 and v9 clips can both be read).
+- Screenshots below predate the AOV and EXR Sequence Reader nodes.
+- Frames are never clamped on the EXR path (half or float); PNG output is 8-bit and does clamp.
 - The Colour Transform node's `view` input defaults to `ACES 2.0 - SDR 100 nits (Rec.709)` to match what Flame expects on import, but any view exposed by the OCIO config can be used instead.
 - Flame users can point the OCIO config field at their project config, typically found at `/opt/Autodesk/colour_mgmt/configs/flame_configs/<version>/aces2.0_config/config.ocio`.

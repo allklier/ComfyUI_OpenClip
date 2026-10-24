@@ -7,3 +7,7 @@ CLAUDE.md
 # Development-only assets
 docs/
 .vscode/
+
+# Dev/acceptance tooling and sibling-project requirements — not needed to run the nodes
+acceptance/
+EXR_REQUIREMENTS.md
