@@ -5,11 +5,14 @@ import json
 import os
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
 from ComfyUI_OpenClip.lib import image_io, openclip_xml, package_layout
 from ComfyUI_OpenClip.lib.openclip_xml import ClipSpan, ClipVersion
+from ComfyUI_OpenClip.nodes.aov_reader import OpenClipAOVReader
+from ComfyUI_OpenClip.nodes.aov_writer import OpenClipAOVWriter
 from ComfyUI_OpenClip.nodes.reader import OpenClipReader
 from ComfyUI_OpenClip.nodes.writer import OpenClipWriter
 
@@ -26,20 +29,20 @@ def _write_seq(tmp_path: Path, n_frames: int = 4, with_alpha: bool = False):
     return pattern, 1001
 
 
-def _clip_with_seq(tmp_path: Path, clip_name: str, version: str, n_frames: int = 4):
+def _clip_with_seq(tmp_path: Path, clip_name: str, version: str, n_frames: int = 4, start_frame: int = 1001):
     """Create a minimal package (frames + .clip file) and return the clip path."""
     seq_dir = tmp_path / clip_name / "versions" / version
     seq_dir.mkdir(parents=True)
     pattern = str(seq_dir / f"{clip_name}.%04d.exr")
     images = torch.rand(n_frames, 64, 64, 3)
-    image_io.write_sequence(pattern, images, None, 1001, "EXR", "half (16-bit)", "ZIP")
+    image_io.write_sequence(pattern, images, None, start_frame, "EXR", "half (16-bit)", "ZIP")
 
     versions = {
         version: ClipVersion(
             uid=version, name=version,
             spans=[ClipSpan(
                 path=f"versions/{version}/{clip_name}.%04d.exr",
-                start_frame=1001, duration=n_frames,
+                start_frame=start_frame, duration=n_frames,
             )],
         )
     }
@@ -55,7 +58,7 @@ def _clip_with_seq(tmp_path: Path, clip_name: str, version: str, n_frames: int =
 def test_read_v8_clip_end_to_end(tmp_path):
     clip_path, original = _clip_with_seq(tmp_path, "sh010", "v001")
     reader = OpenClipReader()
-    images, masks, frame_count, width, height, format_version, *_, fps, _available_versions = reader.execute(
+    images, masks, frame_count, width, height, format_version, *_, fps, _available_versions, _available_aovs = reader.execute(
         clip_path=clip_path, version="current",
         start_frame=-1, end_frame=-1,
         path_from="", path_to="",
@@ -77,6 +80,71 @@ def test_read_explicit_version(tmp_path):
         path_from="", path_to="",
     )["result"]
     assert images.shape[0] == 4
+
+
+def test_frame_cap_limits_the_read(tmp_path):
+    clip_path, _ = _clip_with_seq(tmp_path, "sh010", "v001", n_frames=10)
+    reader = OpenClipReader()
+    images, masks, frame_count, *_ = reader.execute(
+        clip_path=clip_path, version="current",
+        start_frame=-1, end_frame=-1,
+        path_from="", path_to="",
+        frame_cap=3,
+    )["result"]
+    assert images.shape[0] == 3
+    assert frame_count == 3
+
+
+def test_frame_cap_disabled_by_default(tmp_path):
+    # frame_cap not passed at all -- existing saved workflows predate this
+    # widget, so its Python default must reproduce the old unc apped behaviour.
+    clip_path, _ = _clip_with_seq(tmp_path, "sh010", "v001", n_frames=10)
+    reader = OpenClipReader()
+    images, *_ = reader.execute(
+        clip_path=clip_path, version="current",
+        start_frame=-1, end_frame=-1,
+        path_from="", path_to="",
+    )["result"]
+    assert images.shape[0] == 10
+
+
+def test_frame_cap_larger_than_available_is_harmless(tmp_path):
+    clip_path, _ = _clip_with_seq(tmp_path, "sh010", "v001", n_frames=4)
+    reader = OpenClipReader()
+    images, *_ = reader.execute(
+        clip_path=clip_path, version="current",
+        start_frame=-1, end_frame=-1,
+        path_from="", path_to="",
+        frame_cap=999,
+    )["result"]
+    assert images.shape[0] == 4
+
+
+def test_frame_cap_is_relative_to_native_start_regardless_of_numbering(tmp_path):
+    # The actual motivating case: two clips numbered differently (Flame
+    # commonly starts at 1001, but not always) must both cap to the same
+    # frame *count* from their own native start.
+    clip_a, _ = _clip_with_seq(tmp_path, "fg", "v001", n_frames=10, start_frame=1)
+    clip_b, _ = _clip_with_seq(tmp_path, "bg", "v001", n_frames=10, start_frame=1001)
+    reader = OpenClipReader()
+
+    # RETURN_NAMES: IMAGE=0, MASK=1, frame_count=2, width=3, height=4,
+    # format_version=5, version_name=6, start_frame=7, ...
+    result_a = reader.execute(
+        clip_path=clip_a, version="current",
+        start_frame=-1, end_frame=-1,
+        path_from="", path_to="",
+        frame_cap=5,
+    )["result"]
+    result_b = reader.execute(
+        clip_path=clip_b, version="current",
+        start_frame=-1, end_frame=-1,
+        path_from="", path_to="",
+        frame_cap=5,
+    )["result"]
+
+    assert result_a[0].shape[0] == 5 and result_a[2] == 5 and result_a[7] == 1
+    assert result_b[0].shape[0] == 5 and result_b[2] == 5 and result_b[7] == 1001
 
 
 def test_read_missing_version_raises(tmp_path):
@@ -108,6 +176,104 @@ def test_reader_is_changed_detects_rerender(tmp_path):
     os.utime(first_frame, ns=(stat_before.st_atime_ns, stat_before.st_mtime_ns + 1_000_000_000))
 
     assert OpenClipReader.IS_CHANGED(**kwargs) != sig_before
+
+
+def test_reader_is_changed_survives_linked_clip_path(tmp_path):
+    # ComfyUI passes None for any input driven by a link rather than a widget
+    # (execution.py get_input_data -> mark_missing, called with execution_list=None).
+    # IS_CHANGED must not raise: ComfyUI turns an exception into float("NaN"), which
+    # never compares equal to itself, so the node -- and via the ancestry walk in
+    # caching.py, every node downstream of it -- re-executes on every single queue.
+    # This is the regression: a text node feeding clip_path defeated the entire graph's
+    # cache.
+    sig_a = OpenClipReader.IS_CHANGED(clip_path=None, version="current",
+                                      start_frame=-1, end_frame=-1,
+                                      path_from="", path_to="")
+    sig_b = OpenClipReader.IS_CHANGED(clip_path=None, version="current",
+                                      start_frame=-1, end_frame=-1,
+                                      path_from="", path_to="")
+    assert sig_a == sig_b, "a linked input must still yield a stable change signature"
+    assert sig_a == sig_a, "signature must not be NaN-like"
+
+
+def test_reader_is_changed_survives_every_input_linked(tmp_path):
+    # Any subset of inputs can be linked, including all of them at once.
+    sig = OpenClipReader.IS_CHANGED(clip_path=None, version=None, start_frame=None,
+                                    end_frame=None, path_from=None, path_to=None)
+    assert sig == OpenClipReader.IS_CHANGED(clip_path=None, version=None,
+                                            start_frame=None, end_frame=None,
+                                            path_from=None, path_to=None)
+
+
+def test_reader_is_changed_never_raises_on_bad_clip_path(tmp_path):
+    # A genuinely broken path must fail in execute(), where it produces a real error
+    # message -- not in IS_CHANGED, where failing only destroys caching silently.
+    missing = str(tmp_path / "does_not_exist.clip")
+    sig = OpenClipReader.IS_CHANGED(clip_path=missing, version="current",
+                                    start_frame=-1, end_frame=-1,
+                                    path_from="", path_to="")
+    assert sig == OpenClipReader.IS_CHANGED(clip_path=missing, version="current",
+                                            start_frame=-1, end_frame=-1,
+                                            path_from="", path_to="")
+
+
+def test_reader_is_changed_detects_rerender_when_clip_path_is_linked(tmp_path):
+    # THE case this whole mechanism exists for. A PrimitiveString feeding clip_path
+    # makes ComfyUI hand IS_CHANGED None for it, so it cannot resolve the media from
+    # its own arguments. It must still notice a re-render, or an artist who renders a
+    # new clip version gets served a stale cached read forever (a real production
+    # symptom, 2026-08-24: "the clip is stuck on v01 when there is now a v04").
+    clip_path, _ = _clip_with_seq(tmp_path, "sh010", "v001")
+    node_id = "linked-node-1"
+    reader = OpenClipReader()
+    reader.execute(clip_path=clip_path, version="current",
+                   start_frame=-1, end_frame=-1, path_from="", path_to="",
+                   unique_id=node_id)
+
+    linked = dict(clip_path=None, version="current", start_frame=-1, end_frame=-1,
+                  path_from="", path_to="", unique_id=node_id)
+    before = OpenClipReader.IS_CHANGED(**linked)
+    assert before != "", "should have fingerprinted the remembered read plan"
+    assert before == OpenClipReader.IS_CHANGED(**linked), "stable while nothing changes"
+
+    first_frame = Path(clip_path).parent / "versions" / "v001" / "sh010.1001.exr"
+    st = first_frame.stat()
+    os.utime(first_frame, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    assert OpenClipReader.IS_CHANGED(**linked) != before, "a re-render must invalidate"
+
+
+def test_reader_is_changed_returns_constant_before_any_execute(tmp_path):
+    # Before the first execute() there is nothing remembered, so the fallback has no
+    # files to stat. It must return the stable constant rather than raising -- the
+    # node has to run at least once anyway, and raising would poison the whole
+    # downstream graph's cache permanently.
+    linked = dict(clip_path=None, version="current", start_frame=-1, end_frame=-1,
+                  path_from="", path_to="", unique_id="never-executed-node")
+    assert OpenClipReader.IS_CHANGED(**linked) == ""
+
+
+def test_reader_is_changed_memory_is_per_node_instance(tmp_path):
+    # Two readers on different clips must not share a fingerprint.
+    clip_a, _ = _clip_with_seq(tmp_path / "a", "sh010", "v001")
+    clip_b, _ = _clip_with_seq(tmp_path / "b", "sh020", "v001")
+    reader = OpenClipReader()
+    common = dict(version="current", start_frame=-1, end_frame=-1, path_from="", path_to="")
+    reader.execute(clip_path=clip_a, unique_id="node-a", **common)
+    reader.execute(clip_path=clip_b, unique_id="node-b", **common)
+    sig_a = OpenClipReader.IS_CHANGED(clip_path=None, unique_id="node-a", **common)
+    sig_b = OpenClipReader.IS_CHANGED(clip_path=None, unique_id="node-b", **common)
+    assert sig_a != "" and sig_b != ""
+    assert sig_a != sig_b
+
+
+def test_reader_is_changed_absorbs_unknown_inputs(tmp_path):
+    # ComfyUI calls IS_CHANGED with every declared input by name, so adding an input to
+    # INPUT_TYPES must not break it. **kwargs absorbs them.
+    clip_path, _ = _clip_with_seq(tmp_path, "sh010", "v001")
+    kwargs = dict(clip_path=clip_path, version="current", start_frame=-1, end_frame=-1,
+                  path_from="", path_to="")
+    assert (OpenClipReader.IS_CHANGED(**kwargs, some_future_input="x")
+            == OpenClipReader.IS_CHANGED(**kwargs))
 
 
 def test_read_auto_remap(tmp_path):
@@ -309,7 +475,7 @@ def test_round_trip_preserves_fps(tmp_path):
         layout="Standard Flame", publish=False,
     )
     reader = OpenClipReader()
-    *_, fps, _available_versions = reader.execute(
+    *_, fps, _available_versions, _available_aovs = reader.execute(
         clip_path=clip_path, version="current",
         start_frame=-1, end_frame=-1,
         path_from="", path_to="",
@@ -500,7 +666,7 @@ def test_reader_resolves_current_to_actual_version_name(tmp_path):
         path_from="", path_to="",
     )["result"]
     version_name = result[6]
-    available_versions = result[-1]
+    available_versions = result[-2]
     assert version_name == "v003"  # never the literal "current"
     assert available_versions == "v001\nv002\nv003  (current)"
 
@@ -514,3 +680,185 @@ def test_reader_resolves_explicit_version_name(tmp_path):
         path_from="", path_to="",
     )["result"]
     assert result[6] == "v002"
+
+
+# --- AOV round-trip (Reader/Writer nodes) ---
+
+
+def _writer_kwargs(tmp_path: Path, clip_name: str, **overrides) -> dict:
+    kwargs = dict(
+        clip_path=str(tmp_path), clip_name=clip_name,
+        clip_filename="$(path)/$(clip_name)",
+        version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
+        file_format="EXR", exr_bit_depth="float (32-bit)", exr_compression="ZIP",
+        aov_layout="Multichannel", layout="Standard Flame", publish=False,
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def _reader_result(clip_path: str) -> dict:
+    names = (
+        "IMAGE", "MASK", "frame_count", "width", "height", "format_version", "version_name",
+        "start_frame", "clip_path", "clip_name", "metadata", "aov_handle",
+        "colour_space", "fps", "available_versions", "available_aovs",
+    )
+    result = OpenClipReader().execute(
+        clip_path=clip_path, version="current", start_frame=-1, end_frame=-1, path_from="", path_to="",
+    )["result"]
+    return dict(zip(names, result))
+
+
+def _chain(*entries: tuple) -> list:
+    """entries: (name, image_or_None, matte_or_None) -- builds a chain via
+    OpenClipAOVWriter the way a real graph would, node by node."""
+    chain = None
+    writer = OpenClipAOVWriter()
+    for name, image, matte in entries:
+        kwargs = {"name": name}
+        if image is not None:
+            kwargs["image"] = image
+        if matte is not None:
+            kwargs["matte"] = matte
+        if chain is not None:
+            kwargs["aov_chain"] = chain
+        (chain,) = writer.execute(**kwargs)
+    return chain
+
+
+def test_write_read_aov_multichannel_round_trip(tmp_path):
+    image = torch.rand(2, 32, 32, 3)
+    normal = torch.rand(2, 32, 32, 3) * 2 - 1  # image-shaped AOV
+    depth = torch.rand(2, 32, 32) * 100  # matte-shaped AOV
+    chain = _chain(("normal", normal, None), ("depth", None, depth))
+    (clip_path,) = OpenClipWriter().execute(
+        IMAGE=image, aov_chain=chain,
+        **_writer_kwargs(tmp_path, "aov_multi", aov_layout="Multichannel"),
+    )
+    out = _reader_result(clip_path)
+    assert out["available_aovs"] == "normal\ndepth" or out["available_aovs"] == "depth\nnormal"
+
+    n_image, n_matte = OpenClipAOVReader().execute(aov_handle=out["aov_handle"], part_name="normal")
+    assert torch.allclose(n_image, normal, atol=1e-4)
+    assert torch.allclose(n_matte, normal[..., 0], atol=1e-4)  # matte = "R" channel
+
+    d_image, d_matte = OpenClipAOVReader().execute(aov_handle=out["aov_handle"], part_name="depth")
+    assert d_image is None  # single-channel AOV -> matte only
+    assert torch.allclose(d_matte, depth, atol=1e-4)
+    assert d_matte.shape == (2, 32, 32)
+
+
+def test_write_read_aov_separate_files_round_trip(tmp_path):
+    image = torch.rand(2, 32, 32, 3)
+    normal = torch.rand(2, 32, 32, 3) * 2 - 1
+    depth = torch.rand(2, 32, 32) * 100
+    chain = _chain(("normal", normal, None), ("depth", None, depth))
+    (clip_path,) = OpenClipWriter().execute(
+        IMAGE=image, aov_chain=chain,
+        **_writer_kwargs(tmp_path, "aov_sep", aov_layout="Separate Files"),
+    )
+    media_dir = tmp_path / "aov_sep" / "versions" / "v001"
+    assert (media_dir / "aov_sep_AOV_normal.1001.exr").exists()
+    assert (media_dir / "aov_sep_AOV_depth.1001.exr").exists()
+
+    out = _reader_result(clip_path)
+    # Separate-file AOVs live in their own sibling files, not probed from the beauty
+    # file's own subimages -- the beauty file itself carries none.
+    assert out["available_aovs"] == ""
+
+    n_image, _n_matte = OpenClipAOVReader().execute(
+        aov_handle={"abs_pattern": str(media_dir / "aov_sep_AOV_normal.%04d.exr"), "start_frame": 1001, "end_frame": 1002},
+        part_name="normal",
+    )
+    assert torch.allclose(n_image, normal, atol=1e-4)
+
+
+def test_read_no_aovs_returns_empty_probe(tmp_path):
+    # A clip written without any AOVs (existing/plain workflow) must still produce
+    # valid outputs rather than erroring, and the probe must be empty, not fabricate
+    # a phantom AOV list.
+    (clip_path,) = OpenClipWriter().execute(
+        IMAGE=torch.rand(2, 32, 32, 3), **_writer_kwargs(tmp_path, "plain"),
+    )
+    out = _reader_result(clip_path)
+    assert out["available_aovs"] == ""
+    d_image, d_matte = OpenClipAOVReader().execute(aov_handle=out["aov_handle"], part_name="depth")
+    assert d_image is None
+    assert d_matte is None
+
+
+def test_reader_probe_and_extract_real_world_multipart(tmp_path, aov_pixels, write_multipart_exr):
+    # Node-level regression test against a true multi-part EXR matching the real-world
+    # convention (see lib/CLAUDE.md "AOV Channel Handling") -- every part uses generic
+    # R,G,B channel names, identity carried only by the part `name` attribute, including
+    # an unmatched Cryptomatte-like part nothing asks for (never pixel-decoded).
+    clip_name = "mp_aov"
+    seq_dir = tmp_path / clip_name / "versions" / "v001"
+    seq_dir.mkdir(parents=True)
+    depth_replicated = np.repeat(aov_pixels["depth"][:, :, 0:1], 3, axis=-1)
+    crypto = np.random.default_rng(seed=7).random((64, 64, 3)).astype(np.float32)
+    write_multipart_exr(seq_dir / f"{clip_name}.0001.exr", [
+        (aov_pixels["beauty"], ("R", "G", "B", "A"), "beauty"),
+        (depth_replicated, ("R", "G", "B"), "depth"),
+        (aov_pixels["normal"], ("R", "G", "B"), "normals"),
+        (crypto, ("R", "G", "B"), "cryptomatte"),
+    ])
+    versions = {
+        "v001": ClipVersion(
+            uid="v001", name="v001",
+            spans=[ClipSpan(path=f"versions/v001/{clip_name}.%04d.exr", start_frame=1, duration=1)],
+        )
+    }
+    clip_file = tmp_path / clip_name / f"{clip_name}.clip"
+    clip_file.write_bytes(openclip_xml.generate(clip_name, versions, "v001"))
+
+    out = _reader_result(str(clip_file))
+    assert set(out["available_aovs"].split("\n")) == {"depth", "normals", "cryptomatte"}
+
+    d_image, d_matte = OpenClipAOVReader().execute(aov_handle=out["aov_handle"], part_name="depth")
+    # 3-channel replicated scalar on disk (the real-world convention), not literally
+    # single-channel -- so image is populated too, not just matte.
+    assert torch.allclose(d_image[0], torch.from_numpy(depth_replicated), atol=1e-5)
+    assert torch.allclose(d_matte[0], torch.from_numpy(aov_pixels["depth"][:, :, 0]), atol=1e-5)
+
+    n_image, _n_matte = OpenClipAOVReader().execute(aov_handle=out["aov_handle"], part_name="normals")
+    assert torch.allclose(n_image[0], torch.from_numpy(aov_pixels["normal"]), atol=1e-5)
+
+
+def test_writer_aov_png_raises(tmp_path):
+    chain = _chain(("depth", None, torch.rand(1, 32, 32)))
+    with pytest.raises(ValueError, match="EXR"):
+        OpenClipWriter().execute(
+            IMAGE=torch.rand(1, 32, 32, 3), aov_chain=chain,
+            **_writer_kwargs(tmp_path, "pngfail", file_format="PNG"),
+        )
+
+
+def test_writer_duplicate_aov_name_raises(tmp_path):
+    with pytest.raises(ValueError, match="duplicate"):
+        _chain(("depth", None, torch.rand(1, 32, 32)), ("depth", None, torch.rand(1, 32, 32)))
+
+
+def test_aov_writer_requires_exactly_one_of_image_matte():
+    with pytest.raises(ValueError, match="exactly one"):
+        OpenClipAOVWriter().execute(name="x")
+    with pytest.raises(ValueError, match="exactly one"):
+        OpenClipAOVWriter().execute(name="x", image=torch.rand(1, 4, 4, 3), matte=torch.rand(1, 4, 4))
+
+
+def test_colour_space_round_trips_through_writer_and_reader(tmp_path):
+    (clip_path,) = OpenClipWriter().execute(
+        IMAGE=torch.rand(1, 32, 32, 3),
+        CLIP_METADATA={"oiio:ColorSpace": "Log3G10 RedWideGamutRGB"},
+        **_writer_kwargs(tmp_path, "colourspace"),
+    )
+    out = _reader_result(clip_path)
+    assert out["colour_space"] == "Log3G10 RedWideGamutRGB"
+
+
+def test_colour_space_empty_when_not_carried(tmp_path):
+    (clip_path,) = OpenClipWriter().execute(
+        IMAGE=torch.rand(1, 32, 32, 3), **_writer_kwargs(tmp_path, "nocolourspace"),
+    )
+    out = _reader_result(clip_path)
+    assert out["colour_space"] == ""

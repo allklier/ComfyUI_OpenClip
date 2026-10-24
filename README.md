@@ -30,6 +30,8 @@ The write node has the follwing inputs/settings:
 
 - Image: takes an image sequence (if the workflow generates video rather than image batch, use a 'Get Video Components' node to extract an image bath and accompanying parameters).
 - Mask: An alpha channel to go with the EXR files.
+- aov_chain: AOVs from OpenClip AOV Writer nodes to be written alongside the beauty pass.
+- colour_space: the colour space declared in the .clip XML (can be wired from a reader).
 - ClipMetadata: The standard text structure for metadata. The most common use case is to pipe it through from the read node to maintain all metadata in the pipeline.
 - clip_path: where the open clip files will be stored.
 - clip_name: Logical ClipName.
@@ -56,20 +58,39 @@ The reader node has the following inputs/settings:
 
 The node as the following outputs:
 
-- Image: the image batch read from the file.
-- Mask: the alpha channel read from the file.
+- IMAGE: the image batch read from the file.
+- MASK: the alpha channel read from the file (fully opaque if the source has no alpha).
 - frame_count: the number of frames read.
 - width/height: the dimensions of the canvas.
-- format_version: the version of the OpenClip XML file. Latest is version 9 (with Flame 2027.1).
-- clip_path: the path fo the .clip file that was read.
+- format_version: the OpenClip XML schema version (8 or 9; 9 is Flame 2027.1).
+- version_name: the resolved version that was actually read (e.g. `v002`, never the literal 'current').
+- start_frame: first frame number, for wiring into the Writer.
+- clip_path: the path of the .clip file that was read.
 - clip_name: the name of the clip that was read.
-- metadata: the metadata values read.
+- metadata: the EXR header metadata (CLIP_METADATA).
+- aov_handle: a lightweight handle to the clip's frames for the OpenClip AOV Reader (decodes nothing itself).
+- colour_space: the colour space recorded in the EXR header.
 - fps: frame rate indicated in the file.
-- available_version: a text output of available versions in the file.
+- available_versions: a text output (also shown in the node) listing the versions in the file.
+- available_aovs: a text output (also shown in the node) listing the AOV/part names found in the first frame.
+
+The Reader also takes an optional frame range and version. Queue the Reader alone to inspect a clip's versions and AOVs.
+
+### OpenClip EXR Sequence Reader
+Reads plain `name.####.exr` sequences with no `.clip` file, such as Blender renders (including Blender's single-part "OpenEXR MultiLayer" layout) or Nuke output. Provides the same IMAGE/MASK outputs in the same positions as the OpenClip Reader, so the two can be swapped behind a switch node, plus the `aov_handle` and `available_aovs` outputs.
+
+### OpenClip AOV Reader
+Takes an `aov_handle` from either reader and a `part_name`, and decodes only that one named part (e.g. depth, normals, a puzzle matte). Outputs `image` and `matte`; a single-channel AOV is returned as `matte` only. Use `available_aovs` on the reader to see the names. Cryptomatte decoding is not supported. If the named part is not found in any frame, the outputs are `None`.
+
+### OpenClip AOV Writer
+Builds an `AOV_WRITE_CHAIN` of named AOV entries (`name`, `image` and/or `matte`). Chain several together via `aov_chain`, then wire the result into the OpenClip Writer's `aov_chain` input. AOVs can only be written to EXR, not PNG.
+
+### OpenClip Colour Space Transform
+Converts between OCIO colour spaces; the target can be 'Same as input (via pipe)', using the Reader's `colour_space` output.
 
 ### OpenClip Colour Transform
 
-Applies an OCIO view transform to make log and camera spaces compatible with models that have been trained on BT1886/Rec709 footage.
+Applies an OCIO display/view transform (including the ACES output transform, with a selectable `view`) to make log and camera spaces compatible with models that have been trained on BT1886/Rec709 footage.
 
 Insert after the reader and before the rest of the workflow.
 
@@ -96,7 +117,7 @@ Several screenshots showing latest version of the nodes in action. There are two
 |---|---|---|
 | `lxml` | XML parse and serialise | Always |
 | `openimageio` | EXR and PNG I/O | Always |
-| `opencolorio` | OCIO colour transforms | Colour Transform node only |
+| `opencolorio` | OCIO colour transforms | Colour transform nodes only |
 
 **ComfyUI Manager** installs all dependencies automatically from `requirements.txt` when you install the node pack — no manual steps needed.
 
@@ -105,7 +126,7 @@ Several screenshots showing latest version of the nodes in action. There are two
 pip install -r requirements.txt
 ```
 
-If you don't need the Colour Transform node, `opencolorio` can be skipped — the other two nodes will load and run without it.
+If you don't need the colour transform nodes, `opencolorio` can be skipped — the other nodes will load and run without it.
 
 ---
 
@@ -120,7 +141,7 @@ cd ComfyUI/custom_nodes
 git clone https://github.com/allklier/ComfyUI_OpenClip.git
 ```
 
-Restart ComfyUI. The three nodes appear under the **OpenClip** category.
+Restart ComfyUI. The nodes appear under the **OpenClip** category.
 
 ---
 

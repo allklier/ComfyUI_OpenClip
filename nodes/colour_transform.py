@@ -48,6 +48,7 @@ class OpenClipColourTransform:
                 "ocio_config": ("STRING", {"default": _default_ocio_config()}),
                 "input_colour_space": ("STRING", {"default": ""}),
                 "view": ("STRING", {"default": _ct.OUTPUT_VIEW}),
+                "direction": (["forward", "inverse"], {"default": "forward"}),
             },
             "optional": {
                 "MASK": ("MASK",),
@@ -65,6 +66,7 @@ class OpenClipColourTransform:
         ocio_config: str,
         input_colour_space: str,
         view: str,
+        direction: str = "forward",
         MASK: Optional[torch.Tensor] = None,
     ) -> tuple:
         ocio_config = ocio_config.strip()
@@ -77,8 +79,12 @@ class OpenClipColourTransform:
         if not view:
             raise ValueError("view is required")
 
-        output = _ct.apply_colour_transform(IMAGE, ocio_config, input_colour_space, view=view)
-        out_mask = MASK if MASK is not None else torch.zeros(
+        output = _ct.apply_colour_transform(
+            IMAGE, ocio_config, input_colour_space, view=view, inverse=(direction == "inverse")
+        )
+        # No mask connected means no matte, not "nothing here" -- standard VFX
+        # convention treats an absent matte as fully opaque.
+        out_mask = MASK if MASK is not None else torch.ones(
             IMAGE.shape[0], IMAGE.shape[1], IMAGE.shape[2]
         )
         return (output, out_mask)
