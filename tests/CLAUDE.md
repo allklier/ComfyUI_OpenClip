@@ -1,6 +1,6 @@
 # tests/ — Test Suite
 
-Run with `pytest`. No ComfyUI process is required — nodes are exercised by calling their Python methods directly.
+Run with `pytest` (or `pytest -m "not slow"` to skip the one UHD test). No ComfyUI process is required — nodes are exercised by calling their Python methods directly. OpenImageIO and OpenColorIO **are** installed in the local dev environment, so the suite does real EXR/PNG and OCIO work (≈400 tests, ≈2 s). Not covered by anything here: a live ComfyUI server (executor, caching, socket wiring, node loading) and `web/openclip_reader.js`; those need the acceptance run on akflame5. `slow` is registered in `conftest.py` (`pytest_configure`), not `pyproject.toml`.
 
 ## Fixtures
 
@@ -51,7 +51,7 @@ AOV fixtures (`aov_pixels`, `aov_multipart_fixtures`, `write_multipart_exr`, `co
 |---|---|
 | `test_read_exr_rgb` | Reads `test_rgb.exr`; tensor shape `(1, 64, 64, 3)`, dtype float32 |
 | `test_read_exr_rgba_split` | Reads `test_rgba.exr` with `load_alpha=True`; IMAGE `(1,64,64,3)`, MASK `(1,64,64)` |
-| `test_read_exr_rgba_no_alpha` | Reads `test_rgba.exr` with `load_alpha=False`; MASK is all zeros |
+| `test_read_exr_rgb_no_alpha_channel_defaults_to_opaque` etc. | No alpha channel / `load_alpha=False` → MASK is fully opaque (`ones`), per the 2026-09-23 fix (was zeros) |
 | `test_read_png_rgb` | Reads `test_rgb.png`; correct shape and normalised float values |
 | `test_read_png_rgba` | Reads `test_rgba.png` with `load_alpha=True`; MASK non-zero |
 | `test_write_exr_half_zip` | Writes EXR (half, ZIP); file exists, OIIO reports correct bit depth and compression |
@@ -119,7 +119,7 @@ AOV fixtures (`aov_pixels`, `aov_multipart_fixtures`, `write_multipart_exr`, `co
 | `test_apply_transform_does_not_modify_input` | Input tensor is never mutated |
 | `test_apply_transform_returns_float32` / `test_apply_transform_preserves_shape` | dtype and shape invariants |
 | `test_apply_transform_wrong_channels_raises` | 4-channel input raises `ValueError` |
-| `test_node_mask_passthrough` / `test_node_no_mask_returns_zeros` | `OpenClipColourTransform.execute()` MASK behaviour |
+| `test_node_mask_passthrough` / `test_node_no_mask_returns_ones` | `OpenClipColourTransform.execute()` MASK behaviour |
 | `test_node_raises_on_empty_config` / `test_node_raises_on_empty_space` / `test_node_raises_on_empty_view` | Required-input validation |
 | `test_node_output_constant` | End-to-end node call using the real default `view` |
 
@@ -160,7 +160,7 @@ System tests write to a temporary directory (`tmp_path` pytest fixture) and make
 | `test_write_next_version_defaults_to_v001_on_new_clip` | `version_name="next"` on a fresh clip resolves to `v001` |
 | `test_write_next_version_increments_past_existing` | Three successive writes with `version_name="next"` produce `v001`, `v002`, `v003` |
 | `test_write_overwrite_replaces_version_and_deletes_stale_frames` | `overwrite=True` on an existing `version_name` deletes that version's old frame files before writing fewer new ones — no orphaned stale frames remain |
-| `test_write_read_aov_multichannel_round_trip` / `test_write_read_aov_separate_files_round_trip` | Full node-level round trip: `OpenClipAOVWriter` chain → `OpenClipWriter.aov_chain` → `.clip` on disk → `OpenClipReader.aov_handle`/`available_aovs` → `OpenClipAOVReader` outputs match, for both `aov_layout` values. The separate-files case confirms the beauty file's own probe is empty (siblings aren't found by probing the beauty file itself). |
+| `test_write_read_aov_multichannel_round_trip` / `test_write_read_aov_separate_files_round_trip` | Full node-level round trip: `OpenClipAOVWriter` chain → `OpenClipWriter.aov_chain` → `.clip` on disk → `OpenClipReader.aov_handle`/`available_aovs` → `OpenClipAOVReader` outputs match, for both `aov_layout` values. The separate-files case confirms the probe lists the sibling AOVs and that the Reader's own `aov_handle` (pointing at the beauty file) reads them back. |
 | `test_read_no_aovs_returns_empty_probe` | A clip written without AOVs produces an empty `available_aovs` string, and `OpenClipAOVReader` on any name returns `(None, None)` — no fabricated zero tensor |
 | `test_reader_probe_and_extract_real_world_multipart` | Node-level regression test: `OpenClipReader`'s probe and `OpenClipAOVReader` resolve AOVs from a real-world part-name-keyed multi-part EXR built by hand (`write_multipart_exr`), including a Cryptomatte-like part the probe lists but nothing decodes |
 | `test_writer_aov_png_raises` | Writer-level `ValueError` when a non-empty `aov_chain` is connected with `file_format="PNG"` |
@@ -168,3 +168,86 @@ System tests write to a temporary directory (`tmp_path` pytest fixture) and make
 | `test_aov_writer_requires_exactly_one_of_image_matte` | `OpenClipAOVWriter` raises if neither or both of `image`/`matte` are connected |
 | `test_colour_space_round_trips_through_writer_and_reader` | `colour_space` survives a full Writer→Reader round trip for a camera-log-style value, via `CLIP_METADATA` |
 | `test_colour_space_empty_when_not_carried` | `colour_space` is `""` when no `CLIP_METADATA` was wired |
+
+---
+
+## Robustness, scale and node-gap suites (added 2026-10-24)
+
+Contract being locked in: **fail loudly and name the file; never return a plausible-looking wrong tensor.** Where behaviour is found to be weaker than that, pin it as `xfail(strict=True)`, so fixing the library flips it to a failure that forces the marker's removal. There are currently none (the four found on 2026-10-24 were fixed in 1.0.1, see bottom).
+
+### `test_robustness.py`
+
+| Test group | What it checks |
+|---|---|
+| `test_unopenable_frame_mid_sequence_raises_naming_the_file` (EXR+PNG × zero-byte / garbage / 12-byte stub) | `FileNotFoundError` naming the frame file ("OIIO could not open") |
+| `test_truncated_body_raises_instead_of_returning_partial_pixels` (EXR+PNG) | Half a file → `RuntimeError` naming the file, not partial pixels |
+| `test_corrupt_frame_outside_requested_range_is_never_touched` | A bad frame outside the range is not read |
+| `test_corrupt_frame_fails_probe_and_named_part_reads`, `test_aov_reader_node_surfaces_a_corrupt_frame` | `probe_aov_names` / `read_named_part` / `OpenClipAOVReader` fail loudly on a corrupt frame |
+| `test_missing_frame_mid_sequence_raises_naming_the_frame` | Gap in a sequence → `FileNotFoundError` with the frame name |
+| `test_reader_node_surfaces_a_corrupt_frame`, `test_reader_is_changed_survives_a_corrupt_first_frame` | Node-level; `IS_CHANGED` (stat-only) must not raise even when the frame is corrupt |
+| `test_mismatched_resolution_mid_sequence_raises` | 16² → 32² mid-sequence raises `RuntimeError` |
+| `test_alpha_present_in_only_some_frames_is_opaque_where_absent` | Frames lacking alpha get an opaque MASK, others keep theirs |
+| `test_channels_are_addressed_by_name_not_position` | EXR written as `A,B,G,R` reads back correctly |
+| `test_two_channel_exr_raises_with_found_channels_listed`, `test_layer_missing_from_one_frame_raises` | Missing R/G/B (or layer) raises and lists what was found |
+| `test_named_part_zero_filled_at_the_frames_own_size_when_frame_lacks_it` | Per-frame zero-fill for a part absent from one frame |
+| `test_unparseable_clip_raises_xml_syntax_error` (empty / non-XML / binary), `test_truncated_clip_...` | `.clip` that is not XML → `lxml.etree.XMLSyntaxError` from both `parse()` and `read_format()` |
+| `test_structurally_invalid_clip_raises_value_error` (9 cases) | Missing `<name>`/`<tracks>`/`<track>`/`<feeds>`/`vuid`/`<spans>`/`<path>`, range end < start → `ValueError` with the element named |
+| `test_read_format_without_storage_format_raises`, `test_clip_with_no_feeds_...`, `test_missing_clip_file_raises_file_not_found` | Remaining XML failure modes |
+| `test_unknown_edit_rate_label_silently_falls_back_to_24` | *Characterisation* of the silent 24 fps default |
+| `test_reader_*` (empty path, nonexistent clip, unknown version lists available, media deleted, start>end, range beyond media names the first missing frame, zero-span version) | Reader node on broken packages |
+| `test_write_*` (unwritable location, bad bit depth/compression writes nothing, mask shorter than images, writer fps validation, resolution / file-format mismatch against an existing clip, corrupt existing clip is not clobbered) | Write-side failure modes |
+
+### `test_large_sequences.py`
+
+| Test | What it checks |
+|---|---|
+| `test_read_sequence_over_max_frames_...`, `..._at_exactly_max_frames_...`, `test_read_named_part_over_max_frames_raises`, `test_write_sequence_over_max_frames_raises_before_writing` | `MAX_FRAMES` boundary on every entry point (no disk access needed; write leaves nothing behind) |
+| `test_empty_or_inverted_range_raises` | `start > end` → `ValueError` |
+| `test_clip_xml_version_and_span_caps`, `test_clip_xml_span_cap_on_parse` | `MAX_VERSIONS` (on generate) and `MAX_SPANS` (on parse) |
+| `test_long_sequence_round_trips_in_order_with_exact_values` | 240 frames, each filled with `i/1000`; order and exact fp32 values preserved |
+| `test_frame_numbers_crossing_the_padding_width_stay_ordered` | `%04d` across 9999→10000 |
+| `test_reader_node_frame_cap_on_a_long_clip`, `test_exr_sequence_reader_long_sequence_with_gaps_discovery` | 150-frame clip with cap/offset; 60-frame plain sequence with a gap |
+| `test_aov_reader_over_a_long_multipart_sequence` | 60 multi-part frames, single-channel part → matte only, correct per-frame values |
+| `test_writer_next_version_many_times_stays_sequential` | 12 successive `next` writes → `v001…v012`, current is `v012` |
+| `test_fp32_frames_with_alpha_round_trip_bit_exact_at_moderate_size` | 3×960×540 fp32 with alpha, values far outside 0..1, `torch.equal` |
+| `test_all_compressions_survive_a_non_tile_aligned_odd_size` | 301×517 through ZIP/PIZ/DWAB (DWAB within lossy tolerance, smooth content) |
+| `test_uhd_fp32_multi_frame_round_trip_with_aov_and_timing` (`@slow`) | 3×3840×2160 fp32 + depth AOV through Writer→Reader→AOVReader, bit-exact, <120 s (≈1 s in practice) |
+
+### `test_harmonize_nodes.py`
+
+| Test group | What it checks |
+|---|---|
+| `test_aov_writer_*` | Blank/whitespace name, name stripped, chain order preserved and input chain not mutated, duplicate detected after stripping across a long chain, error messages name the AOV |
+| `test_four_channel_aov_...`, `test_two_channel_aov_...`, `test_mixed_chain_...`, `test_aov_survives_half_precision_...`, `test_aov_names_with_awkward_characters_...`, `test_aov_chain_with_mismatched_batch_length_...` | Real Writer→Reader→AOVReader round trips for shapes not covered before (4-ch → matte is channel 0; mixed image/matte chain; HDR/negative values not clamped; sanitised sibling filenames; chain shorter than the batch fails) |
+| `test_aov_reader_*` | Blank/stripped `part_name`, unknown part → `(None, None)`, names are case-sensitive, Cryptomatte-like and beauty parts addressable, start>end, `INPUT_TYPES` shape |
+| `test_aov_is_changed_*` | **First coverage of `OpenClipAOVReader.IS_CHANGED`**: stable, detects a re-render, never raises on bad input, falls back to the last `execute()` for a linked handle |
+| `test_to_printf_pattern_*`, `test_blank_sequence_path_raises`, `test_nonexistent_directory_...` | `ExrSequenceReader` path parsing: missing/ambiguous tokens, hashes in directory names, blank / missing folder |
+| `test_plain_rgba_sequence_...`, `test_plain_rgb_sequence_gets_an_opaque_mask`, `test_clip_name_is_the_filename_stem_...` | Plain (non-Blender) sequences, opaque MASK, clip_name derivation |
+| `test_discovery_*`, `test_explicit_start_only_and_end_only_...`, `test_start_after_end_raises`, `test_frame_cap_zero_raises_...` | Disk discovery (other stems/extensions ignored, numeric sort, regex metacharacters in stem), half-open ranges, `frame_cap=0` characterisation |
+| `test_blank_layer_on_a_blender_...`, `test_unknown_layer_...`, `test_layer_widget_is_stripped`, `test_relative_sequence_path_...`, `test_printf_style_path_is_accepted`, `test_header_colour_space_...`, `test_metadata_output_...`, `test_fps_output_...`, `test_ui_payload_...` | Layer handling, relative path via `folder_paths`, outputs |
+| `test_is_changed_*` (ExrSequenceReader) | Re-rendered first frame detected; linked path falls back to `_LAST_READ_PLAN` |
+| `test_exr_reader_outputs_wire_into_writer_and_round_trip_via_openclip_reader` | ExrSequenceReader → AOVReader → AOVWriter → OpenClipWriter (metadata, colour_space, start_frame, clip_name wired) → OpenClipReader → AOVReader: pixels, mask, AOV bit-exact |
+| `test_cst_*` | `OpenClipColourSpaceTransform`: dropdown layout, whitespace stripping, whitespace-only pipe value, pipe ignored unless target is "Same as input", identity on same space, unknown space / unreadable config raise `PyOpenColorIO.Exception`, HDR/negative not clamped, batch/non-square/float32/input untouched, mask returned as-is, label values unique |
+| `test_cst_every_dropdown_label_resolves_in_the_real_flame_config` | Runs only where Flame's ACES 2.0 config exists (skipped locally, e.g. on akflame5 it would run): every `CAMERA_COLOUR_SPACES` value exists in that config and converts to ACEScg |
+
+### `test_writer_reader_gaps.py`
+
+| Test group | What it checks |
+|---|---|
+| `test_resolve_destination_*`, `test_normalize_to_folder`, `test_writer_dotdot_...`, `test_writer_suffix_pattern_...` | `clip_filename` tokens: suffixes, `..`, repeated tokens, case-insensitive `.clip`, trailing/double slashes, all error cases, tokenless absolute path |
+| `test_fps_label_from_float_accepts/rejects`, `..._tolerance_is_adjustable`, `test_fps_to_rational_...`, `test_writer_to_reader_fps_round_trip` | fps matching incl. rational NTSC values; rejects 0/negative/inf/off-grid values; `23.98` is currently *rejected* (characterised) |
+| `test_writer_colour_space_*` | Wired `colour_space` input lands in the XML, default is the Flame display name, independent of the EXR-header pipe, second version's value is not mismatch-checked (characterised) |
+| `test_metadata_*`, `test_writer_format_options_beat_carried_metadata`, `test_unwritable_metadata_values_are_skipped_not_fatal` | `CLIP_METADATA` carry-through: scalars, every frame, writer options win, un-settable values skipped, PNG unaffected |
+| `test_version_collision_error_message_...`, `test_collision_leaves_existing_...`, `test_overwrite_*`, `test_next_*`, `test_include_version_in_filename_and_overwrite_...` | Collision message contents (banner, version, clip path, three fixes), nothing modified on collision, overwrite scoped to one version (incl. Flat layout with versioned filenames), `next` with non-numbered / 4-digit-padded versions |
+| `test_publish_*` | Publish without workflow info; sidecar + reference survive a later non-publish version |
+| `test_reader_auto_remaps_...`, `test_reader_explicit_path_remap`, `test_reader_wrong_explicit_remap_fails_loudly` | Foreign absolute media roots through the Reader node |
+| `test_reader_reads_a_static_still_clip`, `test_reader_uses_only_the_first_span_...`, `test_parse_generate_round_trip_keeps_a_multi_span_version`, `test_reader_available_versions_text_...` | Static-image clip end to end, multi-span behaviour (Reader reads `spans[0]` only), version list text |
+
+### Bugs found 2026-10-24, fixed in 1.0.1 (xfail markers removed)
+
+| Test | Bug that was fixed |
+|---|---|
+| `test_writer_unsupported_fps_leaves_nothing_on_disk`, `test_writer_format_mismatch_leaves_no_new_frames_behind` | Writer validated fps / existing-clip format after writing frames, leaving orphans; now validates first |
+| `test_fps_label_from_float_rejects_nan` | `fps_label_from_float(nan)` returned `"23.976"` |
+| `test_mismatched_resolution_error_names_the_offending_frame` | Mid-sequence size change gave a bare `torch.stack` error; now names the file |
+| `test_write_static_path_without_frame_token`, `test_write_multiple_frames_to_token_less_path_raises` | `write_sequence` used `%` instead of `frame_path()`; a token-less path now writes a still, several frames to one raises |

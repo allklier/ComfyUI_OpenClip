@@ -201,3 +201,7 @@ def blender_multilayer_fixtures(tmp_path_factory) -> Path:
         assert o.write_image(np.stack([px[n] for n in BLENDER_CHANNELS], axis=-1)), f"write failed: {path}"
         o.close()
     return out
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "slow: heavier large-image/long-sequence tests; deselect with -m 'not slow'")

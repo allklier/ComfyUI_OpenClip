@@ -267,10 +267,18 @@ def test_write_aov_separate_files_round_trip(tmp_path):
     )
     assert (tmp_path / "shot_AOV_normal.0001.exr").exists()
     assert (tmp_path / "shot_AOV_depth.0001.exr").exists()
-    assert image_io.probe_aov_names(pattern, 1) == []  # beauty file itself carries none
+    # the beauty file itself carries none, but the probe finds the sibling files
+    assert image_io.probe_aov_names(pattern, 1) == ["depth", "normal"]
 
-    n_image, _n_matte = image_io.read_named_part(str(tmp_path / "shot_AOV_normal.%04d.exr"), 1, 1, "normal")
+    # readable through the *beauty* pattern (what a Reader's aov_handle holds) ...
+    n_image, _n_matte = image_io.read_named_part(pattern, 1, 1, "normal")
     assert torch.allclose(n_image, normal, atol=1e-4)
+    _d_image, d_matte = image_io.read_named_part(pattern, 1, 1, "depth")
+    assert torch.allclose(d_matte, depth, atol=1e-3)
+    # ... and through the sibling pattern directly, as before
+    n_image, _ = image_io.read_named_part(str(tmp_path / "shot_AOV_normal.%04d.exr"), 1, 1, "normal")
+    assert torch.allclose(n_image, normal, atol=1e-4)
+    assert image_io.read_named_part(pattern, 1, 1, "nope") == (None, None)
 
 
 def test_write_aov_png_raises(tmp_path):

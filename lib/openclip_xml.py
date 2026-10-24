@@ -143,7 +143,7 @@ def fps_label_from_float(value: float, tol: float = _FPS_MATCH_TOLERANCE) -> str
         diff = abs((num / den) - value)
         if best_diff is None or diff < best_diff:
             best_label, best_diff = label, diff
-    if best_diff > tol:
+    if not best_diff <= tol:  # written this way round so NaN is rejected too
         raise ValueError(f"fps {value} does not match any supported rate: {FPS_OPTIONS}")
     return best_label
 

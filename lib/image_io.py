@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import glob
 import os
 import re
 from pathlib import Path
@@ -92,6 +93,11 @@ def read_sequence(
         frame_num = start_frame + i
         filepath = frame_path(path_pattern, frame_num)
         image, mask, frame_meta = _read_beauty_frame(filepath, load_alpha, layer)
+        if images and image.shape != images[0].shape:
+            raise RuntimeError(
+                f"Frame size mismatch: {filepath} is {image.shape[1]}x{image.shape[0]} (WxH) but the "
+                f"sequence started at {images[0].shape[1]}x{images[0].shape[0]}; all frames must match."
+            )
         images.append(image)
         masks.append(mask)
         if i == 0:
@@ -125,6 +131,18 @@ def probe_aov_names(path_pattern: str, frame_num: int) -> list[str]:
             subimage += 1
     finally:
         inp.close()
+    # "Separate Files" AOVs live in sibling '<stem>_AOV_<name>.####.ext' files next to the
+    # beauty; recover each one's real name from its own part `name` attribute.
+    for sibling in _aov_sibling_files(path_pattern, frame_num):
+        sib = oiio.ImageInput.open(sibling)
+        if not sib:
+            continue
+        try:
+            name = _part_name(sib.spec())
+        finally:
+            sib.close()
+        if name and name not in names:
+            names.append(name)
     return names
 
 
@@ -162,6 +180,10 @@ def read_named_part(
         frame_num = start_frame + i
         filepath = frame_path(path_pattern, frame_num)
         pixels, channelnames, hw = _read_named_part_frame(filepath, part_name)
+        if pixels is None:
+            sibling = frame_path(_aov_sibling_pattern(path_pattern, part_name), frame_num)
+            if os.path.exists(sibling):
+                pixels, channelnames, _sib_hw = _read_named_part_frame(sibling, part_name)
         shapes.append(hw)
         if pixels is None:
             image_frames.append(None)
@@ -238,9 +260,12 @@ def write_sequence(
                 raise ValueError(f"duplicate AOV name '{name}' -- each entry in the chain must be unique")
             names_seen.add(name)
 
+    if n_frames > 1 and not _FRAME_TOKEN_RE.search(path_pattern):
+        raise ValueError(f"path_pattern has no frame token but {n_frames} frames were given: {path_pattern}")
+
     for i in range(n_frames):
         frame_num = start_frame + i
-        filepath = path_pattern % frame_num
+        filepath = frame_path(path_pattern, frame_num)
         mask = masks[i] if masks is not None else None
         frame_aovs = [(name, _select_frame(image, i), _select_frame(matte, i)) for name, image, matte in aov_entries]
         inline_aovs = frame_aovs if aov_layout == "Multichannel" else None
@@ -282,6 +307,12 @@ def _aov_pixels_and_names(image: Optional[torch.Tensor], matte: Optional[torch.T
 def _as_hwc(arr: np.ndarray) -> np.ndarray:
     """Promote a (H,W) single-channel array to (H,W,1)."""
     return arr[:, :, None] if arr.ndim == 2 else arr
+
+
+def _aov_sibling_files(path_pattern: str, frame_num: int) -> list[str]:
+    """Existing sibling AOV files ('<stem>_AOV_<anything>.####.ext') for one frame."""
+    probe = frame_path(_aov_sibling_pattern(path_pattern, "ZZZ"), frame_num)
+    return sorted(glob.glob(glob.escape(probe).replace("_AOV_ZZZ", "_AOV_*")))
 
 
 def _aov_sibling_pattern(path_pattern: str, name: str) -> str:

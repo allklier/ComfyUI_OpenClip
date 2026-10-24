@@ -762,15 +762,14 @@ def test_write_read_aov_separate_files_round_trip(tmp_path):
     assert (media_dir / "aov_sep_AOV_depth.1001.exr").exists()
 
     out = _reader_result(clip_path)
-    # Separate-file AOVs live in their own sibling files, not probed from the beauty
-    # file's own subimages -- the beauty file itself carries none.
-    assert out["available_aovs"] == ""
+    # Separate-file AOVs live in sibling files; the probe finds them and the Reader's own
+    # aov_handle (which points at the beauty file) reads them back -- the full wiring.
+    assert out["available_aovs"] == "depth\nnormal"
 
-    n_image, _n_matte = OpenClipAOVReader().execute(
-        aov_handle={"abs_pattern": str(media_dir / "aov_sep_AOV_normal.%04d.exr"), "start_frame": 1001, "end_frame": 1002},
-        part_name="normal",
-    )
+    n_image, _n_matte = OpenClipAOVReader().execute(aov_handle=out["aov_handle"], part_name="normal")
     assert torch.allclose(n_image, normal, atol=1e-4)
+    _d_image, d_matte = OpenClipAOVReader().execute(aov_handle=out["aov_handle"], part_name="depth")
+    assert torch.allclose(d_matte, depth, atol=1e-2)
 
 
 def test_read_no_aovs_returns_empty_probe(tmp_path):

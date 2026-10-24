@@ -195,7 +195,7 @@ single multichannel subimage (the old dotted-convention shape) regardless of the
 `"Multichannel"` layout's name — the new write path actually produces what the reader
 now expects. `aov_layout="Separate Files"` writes one sibling
 `<stem>_AOV_<name>.####.ext` file per entry instead (name taken directly from the
-entry, sanitized for filesystem safety, not a fixed suffix table). AOVs require
+entry, sanitized for filesystem safety, not a fixed suffix table). Since 2026-10-24 `probe_aov_names()` lists those siblings too (original name from each file's part `name` attribute) and `read_named_part()` falls back to the sibling file when the beauty frame lacks the part, so a beauty-pattern handle reads both layouts. AOVs require
 `file_format="EXR"` — PNG's 8-bit clamp-to-uint8 write path would silently corrupt
 normals (signed, ~-1..1) or depth (unbounded). Duplicate names in `aov_entries` raise
 `ValueError`.

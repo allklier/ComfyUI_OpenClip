@@ -101,6 +101,26 @@ class OpenClipWriter:
                 f"  - type a different version_name"
             )
 
+        # Everything that can reject this write is checked before any directory or frame
+        # touches the disk, so a refused run never leaves orphan frames behind.
+        fps_label = openclip_xml.fps_label_from_float(fps)
+        n_frames, height, width = IMAGE.shape[0], IMAGE.shape[1], IMAGE.shape[2]
+        fmt = ClipFormat(
+            width=width,
+            height=height,
+            n_channels=4 if MASK is not None else 3,
+            bit_depth=exr_bit_depth,
+            fps=fps_label,
+            colour_space=colour_space,
+            file_format=file_format,
+            compression=exr_compression,
+        )
+        if existing is not None:
+            mismatches = _format_mismatches(openclip_xml.read_format(str(probe.clip_file)), fmt)
+            if mismatches:
+                detail = ", ".join(f"{k}: existing={old} new={nw}" for k, old, nw in mismatches)
+                raise ValueError(f"Format mismatch with '{probe.clip_file.name}': {detail}")
+
         paths = package_layout.build(
             layout, output_dir, clip_name, version_name, file_format, frame_padding
         )
@@ -117,21 +137,8 @@ class OpenClipWriter:
             metadata=CLIP_METADATA, aov_entries=aov_chain, aov_layout=aov_layout,
         )
 
-        n_frames, height, width = IMAGE.shape[0], IMAGE.shape[1], IMAGE.shape[2]
         print(f"[OpenClipWriter] First frame written: {abs_pattern % start_frame}")
         print(f"[OpenClipWriter] Wrote {n_frames} {file_format} file(s) to {paths.media_dir}")
-        n_channels = 4 if MASK is not None else 3
-        fps_label = openclip_xml.fps_label_from_float(fps)
-        fmt = ClipFormat(
-            width=width,
-            height=height,
-            n_channels=n_channels,
-            bit_depth=exr_bit_depth,
-            fps=fps_label,
-            colour_space=colour_space,
-            file_format=file_format,
-            compression=exr_compression,
-        )
 
         sidecar_rel = _write_publish_sidecar(paths, extra_pnginfo) if publish else None
         new_version = ClipVersion(
