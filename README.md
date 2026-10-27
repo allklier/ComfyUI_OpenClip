@@ -28,8 +28,8 @@ include_version_in_filename off          include_version_in_filename on  (Flame-
 <path>/                                  <path>/
   foo.clip                                 foo.clip
   foo/                                     foo/
-    v001/foo.1001.exr …                      foo_v001.1001.exr …
-    v002/foo.1001.exr …                      foo_v002.1001.exr …
+    v001/foo.0001.exr …                      foo_v001.0001.exr …
+    v002/foo.0001.exr …                      foo_v002.0001.exr …
 ```
 
 **Turning `include_version_in_filename` on gives the same layout Flame itself uses for its Open Clip exports**, so ComfyUI versions sit alongside Flame's own in the same folder. With it off, each version gets its own subfolder.
@@ -50,9 +50,9 @@ The write node has the follwing inputs/settings:
 - clip_filename: filename of the .clip file. This uses a pattern, referencing the other clip settings to construct the full filename. Default is: `$(path)/$(clip_name).clip`.
 - version_name: the text string of the version. The default of 'next' will allocate the next version, or start with v001.
 - overwrite: whether existing versions are allowed to be overwritten. If the latest version is 'v003', and the version_name is also set to 'v003', the existing version 'v003' will be deleted and a new version will be written. If disabled, writing an existing version number results in an error.
-- include_version_in_filename: adds the version to the frame filenames (`foo_v003.1001.exr`) and puts all versions' frames in one folder — the layout Flame uses for its own Open Clip exports (recommended when working alongside Flame). Off: one subfolder per version, version not in the filename.
+- include_version_in_filename: adds the version to the frame filenames (`foo_v003.0001.exr`) and puts all versions' frames in one folder — the layout Flame uses for its own Open Clip exports (recommended when working alongside Flame). Off: one subfolder per version, version not in the filename.
 - fps: the frame rate to place into the clip metadata (must match a standard rate such as 23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60).
-- start_frame: the number of the first written frame.
+- start_frame: the number of the first written frame. Default 1, as Flame numbers its own renders; use 1001 for Nuke or film pipelines. Wire it from the Reader to keep a source clip's numbering.
 - frame_padding: how many zeros to put in front of short frame numbers.
 - file_format: choose between EXR and PNG (AOVs require EXR).
 - exr_bit_depth, exr_compression: EXR specific.

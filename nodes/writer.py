@@ -29,7 +29,7 @@ class OpenClipWriter:
                 "overwrite": ("BOOLEAN", {"default": False}),
                 "include_version_in_filename": ("BOOLEAN", {"default": False}),
                 "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 120.0, "step": 0.001}),
-                "start_frame": ("INT", {"default": 1001, "min": 0, "max": 999999}),
+                "start_frame": ("INT", {"default": 1, "min": 0, "max": 999999}),
                 "frame_padding": ("INT", {"default": 4, "min": 1, "max": 9}),
                 "file_format": (["EXR", "PNG"],),
                 "exr_bit_depth": (["half (16-bit)", "float (32-bit)"],),

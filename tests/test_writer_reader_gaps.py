@@ -580,3 +580,8 @@ def test_overwrite_with_version_in_filename_also_removes_old_dot_named_frames(tm
     names = sorted(p.name for p in (tmp_path / "s" / "versions" / "v001").glob("*.exr"))
     assert names == ["s_v001.0001.exr", "s_v001.0002.exr"]
     assert _read(str(clip), version="v001")[2] == 2
+
+
+def test_writer_start_frame_defaults_to_flames_1():
+    # Flame numbers its own renders from 1; 1001 is the Nuke/film convention (PR #5 review).
+    assert OpenClipWriter.INPUT_TYPES()["required"]["start_frame"][1]["default"] == 1
