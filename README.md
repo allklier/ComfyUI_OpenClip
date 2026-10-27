@@ -170,7 +170,8 @@ Restart ComfyUI. The nodes appear under the **OpenClip** category.
 
 ## Notes
 
-- New clips are written as OpenClip schema version 6 by default, which older Flame releases (e.g. 2024) can import; set the Writer's `format_version` (5–9) to change it. Adding a version to an existing clip keeps that clip's own schema version and all of Flame's metadata.
+- New clips are written as OpenClip schema version 6 by default, so that older Flame releases can import them; set the Writer's `format_version` (5–9) to change it. Adding a version to an existing clip keeps that clip's own schema version and all of Flame's metadata.
+- Tested with Flame 2027: a clip written by the Writer opens, and Flame can add its own versions to it. Flame 2024 and 2025 have not been tested; schema 6 and the `Rec.709 video` tag were chosen for them, based on a Flame 2024.1 user's report and the names older Flame wrote.
 - Pattern-based clips (`ScanPattern`) and clips referencing movie files (`.mov` etc.) can't be read; stereo clips read the left eye.
 - Screenshots below predate the AOV and EXR Sequence Reader nodes.
 - Frames are never clamped on the EXR path (half or float); PNG output is 8-bit and does clamp.
