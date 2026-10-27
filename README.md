@@ -44,13 +44,13 @@ The write node has the follwing inputs/settings:
 - MASK (optional): an alpha channel to go with the EXR files.
 - CLIP_METADATA (optional): the standard metadata structure. The most common use case is to pipe it through from the Reader to maintain all metadata in the pipeline.
 - aov_chain (optional): AOVs to write alongside the beauty pass, built with OpenClip AOV Writer nodes.
-- colour_space (optional): the colour space declared in the .clip XML; can be wired from a Reader.
+- colour_space (optional): the colour space declared in the .clip XML; can be wired from a Reader. Default `Rec.709 video`: the name Flame used before 2026, which Flame 2026 and later still recognise (as an alias of `Rec.1886 Rec.709 - Display`), so the same tag works across Flame versions.
 - clip_path: where the OpenClip files will be stored.
 - clip_name: logical clip name.
 - clip_filename: filename of the .clip file. This uses a pattern, referencing the other clip settings to construct the full filename. Default is: `$(path)/$(clip_name).clip`.
 - version_name: the text string of the version. The default of 'next' will allocate the next version, or start with v001.
 - overwrite: whether existing versions are allowed to be overwritten. If the latest version is 'v003', and the version_name is also set to 'v003', the existing version 'v003' will be deleted and a new version will be written. If disabled, writing an existing version number results in an error.
-- include_version_in_filename: adds the version to the frame filenames (`foo_v003.0001.exr`) and puts all versions' frames in one folder — the layout Flame uses for its own Open Clip exports (recommended when working alongside Flame). Off: one subfolder per version, version not in the filename.
+- include_version_in_filename: on by default. Adds the version to the frame filenames (`foo_v003.0001.exr`) and puts all versions' frames in one folder — the layout Flame uses for its own Open Clip exports, which lets Flame add its own versions to the clip. Off: one subfolder per version, version not in the filename.
 - fps: the frame rate to place into the clip metadata (must match a standard rate such as 23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60).
 - start_frame: the number of the first written frame. Default 1, as Flame numbers its own renders; use 1001 for Nuke or film pipelines. Wire it from the Reader to keep a source clip's numbering.
 - frame_padding: how many zeros to put in front of short frame numbers.
@@ -110,9 +110,17 @@ Applies an OCIO display/view transform (including the ACES output transform, wit
 
 Insert after the reader and before the rest of the workflow.
 
-When installed on Flame workstations, it will default to the ACES 2.0 OCIO config that ships with flame, usually located at `/opt/Autodesk/colour_mgmt/configs/flame_configs/`.
+The config defaults to the `$OCIO` environment variable if set; otherwise, on Flame 2026 or later workstations, to the ACES 2.0 OCIO config that ships with Flame (`/opt/Autodesk/colour_mgmt/configs/flame_configs/<version>/aces2.0_config/config.ocio`).
 
-It falls back to the `$OCIO` environment variable if set
+### Flame 2025 and earlier (SynColor)
+
+Both colour transform nodes use OCIO. Flame switched from its own SynColor colour management to OCIO in Flame 2026, so on older Flame workstations there's no default config to find. You have two options:
+
+- **Do the colour conversion in Flame** before and after ComfyUI, and leave these nodes out of the workflow.
+- **Use one of Autodesk's SynColor-emulation OCIO configs.** These ship with Flame 2026 and later in `/opt/Autodesk/colour_mgmt/configs/legacy_configs/` (e.g. `syncolor_aces1.1_config/config.ocio`). They are not part of this node pack; copy the folder from a Flame 2026+ install or obtain it from Autodesk, then point `ocio_config` (or `$OCIO`) at its `config.ocio`. With such a config:
+  - Colour space names are the old SynColor names (e.g. `Rec.709 video`, `scene-linear Alexa WideGamut`). The Colour Space Transform's dropdown entries and the Colour Transform's display are translated automatically; anything typed by hand must use the old names. `Sony S-Log3 (S-Gamut3.Cine)` has no equivalent in these configs.
+  - The default `view` (`ACES 2.0 - SDR 100 nits (Rec.709)`) doesn't exist; use e.g. `ACES 1.1 SDR-video (Rec.709 limited)` or `ACES 1.0 SDR-video`. A wrong view name produces an error listing the available ones.
+  - These configs emulate the old SynColor transforms; an exact match to what a given pre-2026 Flame produced hasn't been verified.
 
 ---
 

@@ -126,6 +126,7 @@ AOV fixtures (`aov_pixels`, `aov_multipart_fixtures`, `write_multipart_exr`, `co
 | `test_node_mask_passthrough` / `test_node_no_mask_returns_ones` | `OpenClipColourTransform.execute()` MASK behaviour |
 | `test_node_raises_on_empty_config` / `test_node_raises_on_empty_space` / `test_node_raises_on_empty_view` | Required-input validation |
 | `test_node_output_constant` | End-to-end node call using the real default `view` |
+| `test_default_display_falls_back_to_its_legacy_name`, `test_legacy_input_name_resolves_and_inverse_works`, `test_missing_view_lists_the_available_ones`, `test_new_name_wins_when_the_config_has_it` (+ in `test_colour_space_transform.py`: `test_dropdown_entry_resolves_to_its_legacy_name`, `test_unmapped_name_still_fails_loudly_in_a_legacy_config`, `test_every_legacy_name_maps_from_a_name_this_project_uses`) | Pre-2026 Flame name fallback against `fixtures/test_ocio_legacy.ocio`, a self-made config using SynColor names (`Rec.709 video`, `scene-linear Alexa WideGamut`) — Autodesk's legacy configs are not redistributed |
 
 ---
 

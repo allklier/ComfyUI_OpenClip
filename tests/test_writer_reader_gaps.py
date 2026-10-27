@@ -90,7 +90,7 @@ def test_writer_dotdot_destination_lands_beside_the_source(tmp_path):
 
 
 def test_writer_suffix_pattern_names_clip_and_frames_alike(tmp_path):
-    clip = _write(tmp_path, clip_filename="$(path)/$(clip_name)_clean")
+    clip = _write(tmp_path, clip_filename="$(path)/$(clip_name)_clean", include_version_in_filename=False)
     assert Path(clip).name == "s_clean.clip"
     assert sorted(p.name for p in Path(clip).parent.rglob("*.exr")) == ["s_clean.0001.exr", "s_clean.0002.exr"]
 
@@ -136,9 +136,11 @@ def test_writer_to_reader_fps_round_trip(tmp_path, fps, label):
 # --- wired colour_space -----------------------------------------------------------------------------
 
 
-def test_writer_colour_space_default_is_the_flame_display_name(tmp_path):
+def test_writer_colour_space_default_is_the_name_every_flame_resolves(tmp_path):
+    # "Rec.709 video" is the pre-2026 SynColor name; Flame 2026+'s OCIO config keeps it as an
+    # alias of "Rec.1886 Rec.709 - Display", so one tag serves 2024-2027 (PR #5 review).
     clip = _write(tmp_path)
-    assert openclip_xml.read_format(clip).colour_space == "Rec.1886 Rec.709 - Display"
+    assert openclip_xml.read_format(clip).colour_space == "Rec.709 video"
 
 
 def test_writer_colour_space_input_lands_in_the_clip_xml(tmp_path):
@@ -222,10 +224,10 @@ def test_collision_leaves_existing_frames_and_clip_untouched(tmp_path):
 
 def test_overwrite_of_one_version_leaves_other_versions_frames_alone(tmp_path):
     for _ in range(2):
-        clip = _write(tmp_path, n=3)
+        clip = _write(tmp_path, n=3, include_version_in_filename=False)
     v1 = sorted((Path(clip).parent / "s" / "v001").glob("*.exr"))
     stamp = [p.stat().st_mtime_ns for p in v1]
-    _write(tmp_path, n=1, version_name="v002", overwrite=True)
+    _write(tmp_path, n=1, version_name="v002", overwrite=True, include_version_in_filename=False)
     assert [p.stat().st_mtime_ns for p in sorted((Path(clip).parent / "s" / "v001").glob("*.exr"))] == stamp
     assert len(list((Path(clip).parent / "s" / "v002").glob("*.exr"))) == 1
     assert openclip_xml.parse(clip).versions["v002"].spans[0].duration == 1
@@ -511,7 +513,7 @@ def test_append_creates_versions_block_when_the_clip_has_none(tmp_path):
 
 def test_overwrite_replaces_feed_and_version_in_place(tmp_path):
     clip = _flame_clip(tmp_path)
-    _write(tmp_path, fps=25.0, version_name="v01", overwrite=True)
+    _write(tmp_path, fps=25.0, version_name="v01", overwrite=True, include_version_in_filename=False)
     root = etree.parse(str(clip)).getroot()
     assert root.get("version") == "6"
     assert _feeds_and_versions(root) == (["v01", "v02"], ["v01", "v02"])  # same order, no duplicate
@@ -585,3 +587,8 @@ def test_overwrite_with_version_in_filename_also_removes_old_dot_named_frames(tm
 def test_writer_start_frame_defaults_to_flames_1():
     # Flame numbers its own renders from 1; 1001 is the Nuke/film convention (PR #5 review).
     assert OpenClipWriter.INPUT_TYPES()["required"]["start_frame"][1]["default"] == 1
+
+
+def test_include_version_in_filename_defaults_on_for_flames_layout():
+    # Flame is the default platform, and only this layout lets Flame add its own versions (PR #5 review).
+    assert OpenClipWriter.INPUT_TYPES()["required"]["include_version_in_filename"][1]["default"] is True

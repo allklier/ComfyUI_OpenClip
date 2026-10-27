@@ -183,3 +183,31 @@ def test_node_raises_on_empty_config():
             custom_source="linear", target_colour_space=CUSTOM_LABEL,
             custom_target_colour_space="linear",
         )
+
+
+# --- pre-2026 Flame (SynColor-emulation) configs: legacy names (2026-10-28) ---
+
+LEGACY_CONFIG = str(Path(__file__).parent / "fixtures" / "test_ocio_legacy.ocio")
+
+
+def test_dropdown_entry_resolves_to_its_legacy_name():
+    # "ARRI LogC3 (Wide Gamut 3)" -> "Linear ARRI Wide Gamut 3", which a legacy config only
+    # knows as "scene-linear Alexa WideGamut".
+    images = torch.full((1, 2, 2, 3), 0.25)
+    (out, _) = OpenClipColourSpaceTransform().execute(
+        IMAGE=images, ocio_config=LEGACY_CONFIG, source="ARRI LogC3 (Wide Gamut 3)", custom_source="",
+        target_colour_space=ACESCG_LABEL,
+    )
+    assert torch.allclose(out, torch.full_like(out, 0.5), atol=1e-5)
+
+
+def test_unmapped_name_still_fails_loudly_in_a_legacy_config():
+    import PyOpenColorIO as ocio
+    with pytest.raises(ocio.Exception):
+        apply_colourspace_transform(torch.zeros(1, 2, 2, 3), LEGACY_CONFIG, "Linear S-Gamut3.Cine", "ACEScg")
+
+
+def test_every_legacy_name_maps_from_a_name_this_project_uses():
+    from ComfyUI_OpenClip.lib.colour_transform import LEGACY_NAMES, OUTPUT_COLOUR_SPACE
+    used = set(CAMERA_COLOUR_SPACES.values()) | {OUTPUT_COLOUR_SPACE}
+    assert set(LEGACY_NAMES) <= used

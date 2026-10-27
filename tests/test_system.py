@@ -323,7 +323,7 @@ def test_write_standard_flame_layout(tmp_path):
         clip_filename="$(path)/$(clip_name)",
         version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
-        layout="Standard Flame", publish=False,
+        layout="Standard Flame", publish=False, include_version_in_filename=False,
     )
     clip_file = Path(clip_path)
     assert clip_file.exists()
@@ -355,7 +355,7 @@ def test_write_flat_layout(tmp_path):
         clip_filename="$(path)/$(clip_name)",
         version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
-        layout="Flat", publish=False,
+        layout="Flat", publish=False, include_version_in_filename=False,
     )
     assert Path(clip_path).exists()
     assert (tmp_path / "myshot.1001.exr").exists()
@@ -369,7 +369,7 @@ def test_write_png_sequence(tmp_path):
         clip_filename="$(path)/$(clip_name)",
         version_name="v001", fps=24.0, start_frame=1, frame_padding=4,
         file_format="PNG", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
-        layout="Flat", publish=False,
+        layout="Flat", publish=False, include_version_in_filename=False,
     )
     assert (tmp_path / "myshot.0001.png").exists()
 
@@ -383,7 +383,7 @@ def test_write_publish_creates_sidecar(tmp_path):
         clip_filename="$(path)/$(clip_name)",
         version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
-        layout="Standard Flame", publish=True,
+        layout="Standard Flame", publish=True, include_version_in_filename=False,
         extra_pnginfo={"workflow": workflow},
     )
     # sidecar lives in the version media dir, not beside the .clip
@@ -578,7 +578,7 @@ def test_write_overwrite_replaces_version_and_deletes_stale_frames(tmp_path):
         clip_filename="$(path)/$(clip_name)",
         version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
-        layout="Standard Flame", publish=False,
+        layout="Standard Flame", publish=False, include_version_in_filename=False,
     )
     media_dir = tmp_path / "mv" / "v001"
     assert len(list(media_dir.glob("*.exr"))) == 6
@@ -588,7 +588,7 @@ def test_write_overwrite_replaces_version_and_deletes_stale_frames(tmp_path):
         clip_filename="$(path)/$(clip_name)",
         version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
-        layout="Standard Flame", publish=False, overwrite=True,
+        layout="Standard Flame", publish=False, overwrite=True, include_version_in_filename=False,
     )
 
     # Stale frames 1004-1006 from the first (longer) render must be gone.
@@ -755,7 +755,7 @@ def test_write_read_aov_separate_files_round_trip(tmp_path):
     chain = _chain(("normal", normal, None), ("depth", None, depth))
     (clip_path,) = OpenClipWriter().execute(
         IMAGE=image, aov_chain=chain,
-        **_writer_kwargs(tmp_path, "aov_sep", aov_layout="Separate Files"),
+        **_writer_kwargs(tmp_path, "aov_sep", aov_layout="Separate Files", include_version_in_filename=False),
     )
     media_dir = tmp_path / "aov_sep" / "v001"
     assert (media_dir / "aov_sep_AOV_normal.1001.exr").exists()

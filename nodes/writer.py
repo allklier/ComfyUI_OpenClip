@@ -27,7 +27,7 @@ class OpenClipWriter:
                 "clip_filename": ("STRING", {"default": "$(path)/$(clip_name).clip"}),
                 "version_name": ("STRING", {"default": "next"}),
                 "overwrite": ("BOOLEAN", {"default": False}),
-                "include_version_in_filename": ("BOOLEAN", {"default": False}),
+                "include_version_in_filename": ("BOOLEAN", {"default": True}),
                 "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 120.0, "step": 0.001}),
                 "start_frame": ("INT", {"default": 1, "min": 0, "max": 999999}),
                 "frame_padding": ("INT", {"default": 4, "min": 1, "max": 9}),
@@ -41,7 +41,7 @@ class OpenClipWriter:
                 "MASK": ("MASK",),
                 "CLIP_METADATA": ("CLIP_METADATA",),
                 "aov_chain": ("AOV_WRITE_CHAIN",),
-                "colour_space": ("STRING", {"default": "Rec.1886 Rec.709 - Display"}),
+                "colour_space": ("STRING", {"default": "Rec.709 video"}),
                 # Open Clip schema version for a *new* .clip (root <clip version="...">); wire
                 # OpenClipReader.format_version here to match a source clip. Appending to an
                 # existing .clip always keeps that file's own version. Default 6 because Flame
@@ -75,11 +75,11 @@ class OpenClipWriter:
         exr_bit_depth: str,
         exr_compression: str,
         aov_layout: str = "Multichannel",
-        colour_space: str = "Rec.1886 Rec.709 - Display",
+        colour_space: str = "Rec.709 video",
         layout: str = "Standard Flame",
         publish: bool = False,
         overwrite: bool = False,
-        include_version_in_filename: bool = False,
+        include_version_in_filename: bool = True,
         MASK: Optional[torch.Tensor] = None,
         CLIP_METADATA: Optional[dict] = None,
         aov_chain: Optional[list] = None,
