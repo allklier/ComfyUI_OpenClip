@@ -28,7 +28,8 @@ Business logic lives here. The three modules map to the three responsibilities: 
 IMAGE + MASK tensors
   → image_io.write_sequence() via OIIO → frame files on disk
   → package_layout.build() → directory tree
-  → openclip_xml.generate() → .clip XML written to disk
+  → openclip_xml.generate() (new clip, schema from format_version, default 6)
+    or openclip_xml.append_version() (existing clip, edited in place) → .clip XML written to disk
   → .comfy.json sidecar written + XML reference added (if publish enabled)
 ```
 
@@ -83,6 +84,10 @@ Flame encodes the frame range directly inside the path using `[NNNNNN-NNNNNN]` n
 A real Flame `<span><path>` can also carry `encoding="file"` for a single static image (a still/screenshot, not a sequence) — no `[NNNN-NNNN]` range and no `<startFrame>`/`<duration>`. `_parse_spans` detects the absence of range notation and represents it as a one-frame span (`start_frame=1`, `duration=1`, path unchanged). `image_io.read_sequence` reads the path literally in this case rather than applying `%` frame substitution, since there is no printf token to substitute. Confirmed against two real Flame-exported clips referencing a single `.png`.
 
 All media paths inside the XML are relative to the `.clip` file's directory.
+
+**Track choice, shared by `parse()`, `read_format()` and `append_version()` (`_select_track`, 2026-10-27):** the first track whose `<trackType>` is `video`, else the first track. Autodesk's examples include audio tracks and one-track-per-layer clips (Beauty/Matte/Position/UV); other tracks are ignored and never rewritten. A clip with a `<handler>` and no `<tracks>` (ScanPattern clips) raises "pattern-based clips … not supported". Stereo spans (`<paths><path subFeedId="Left">…`) read the first path.
+
+**Writing never regenerates an existing clip (2026-10-27, issue #4).** `append_version()` loads the file, adds or replaces one `<feed vuid=…>` and one top-level `<version uid=…>`, and sets `currentVersion` on both; everything else — the root schema version, Flame's track names, userData, other tracks, unknown elements — is left as it was. `_build_feed()`/`_build_version()` are shared with `generate()`, which is now used only for brand-new clips.
 
 ---
 

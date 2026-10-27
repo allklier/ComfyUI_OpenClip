@@ -66,7 +66,7 @@ The node as the following outputs:
 - MASK: the alpha channel read from the file (fully opaque if the source has no alpha).
 - frame_count: the number of frames read.
 - width/height: the dimensions of the canvas.
-- format_version: the OpenClip XML schema version (8 or 9; 9 is Flame 2027.1).
+- format_version: the OpenClip XML schema version (e.g. 6–9; 9 is Flame 2027.1). Wire into the Writer's `format_version` to write a new clip at the same version.
 - version_name: the resolved version that was actually read (e.g. `v002`, never the literal 'current').
 - start_frame: first frame number, for wiring into the Writer.
 - clip_path: the path of the .clip file that was read.
@@ -150,7 +150,8 @@ Restart ComfyUI. The nodes appear under the **OpenClip** category.
 
 ## Notes
 
-- XML is always written as OpenClip v8 (v8 and v9 clips can both be read).
+- New clips are written as OpenClip schema version 6 by default, which older Flame releases (e.g. 2024) can import; set the Writer's `format_version` (5–9) to change it. Adding a version to an existing clip keeps that clip's own schema version and all of Flame's metadata.
+- Pattern-based clips (`ScanPattern`) and clips referencing movie files (`.mov` etc.) can't be read; stereo clips read the left eye.
 - Screenshots below predate the AOV and EXR Sequence Reader nodes.
 - Frames are never clamped on the EXR path (half or float); PNG output is 8-bit and does clamp.
 - The Colour Transform node's `view` input defaults to `ACES 2.0 - SDR 100 nits (Rec.709)` to match what Flame expects on import, but any view exposed by the OCIO config can be used instead.

@@ -79,17 +79,15 @@ def parse(clip_path: str) -> ParsedClip:
     if not path.exists():
         raise FileNotFoundError(f"Clip file not found: {clip_path}")
 
-    tree = etree.parse(str(path))
-    root = tree.getroot()
+    root = _load(path).getroot()
 
     schema_version = root.get("version", "8")
 
+    # Most of Autodesk's own example clips have no root <name>; fall back to the file stem.
     name_el = root.find("name")
-    if name_el is None:
-        raise ValueError(f"Missing <name> element in {clip_path}")
-    clip_name = (name_el.text or "").strip()
+    clip_name = (name_el.text or "").strip() if name_el is not None else ""
 
-    return _parse_clip(root, clip_name, schema_version)
+    return _parse_clip(root, clip_name or path.stem, schema_version, clip_path)
 
 
 def resolve_version(clip: ParsedClip, version: str) -> ClipVersion:
@@ -153,27 +151,31 @@ def read_format(clip_path: str) -> ClipFormat:
     path = Path(clip_path)
     if not path.exists():
         raise FileNotFoundError(f"Clip file not found: {clip_path}")
-    root = etree.parse(str(path)).getroot()
-
-    storage = root.find(".//storageFormat")
-    if storage is None:
-        raise ValueError(f"No <storageFormat> in {clip_path}")
+    root = _load(path).getroot()
+    # Same track the reader reads, so a multi-track clip's audio/AOV tracks never supply the format.
+    track = _select_track(root, clip_path) if root.find("tracks") is not None else root
 
     def _t(el: etree._Element, tag: str, default: str = "") -> str:
         child = el.find(tag)
         return (child.text or default).strip() if child is not None else default
 
+    # Many Autodesk example clips carry no <storageFormat> at all; unknown fields stay at
+    # 0/"" so the writer's mismatch check skips them.
+    storage = track.find(".//storageFormat")
+    has_storage = storage is not None
+    if not has_storage:
+        storage = etree.Element("storageFormat")
     depth_int = int(_t(storage, "channelsDepth") or "16")
     bit_depth = _BIT_DEPTH_LABEL.get(depth_int, "half (16-bit)")
-    file_format = _t(storage, "fileFormat", "exr").upper()
-    compression = _t(storage, "compression", "ZIP").upper()
+    file_format = _t(storage, "fileFormat", "exr" if has_storage else "").upper()
+    compression = _t(storage, "compression", "ZIP" if has_storage else "").upper()
     colour_space = _t(storage, "colourSpace")
     width = int(_t(storage, "width") or "0")
     height = int(_t(storage, "height") or "0")
     n_channels = int(_t(storage, "nbChannels") or "3")
 
     fps = "24"
-    er = root.find(".//editRate")
+    er = track.find(".//editRate")
     if er is not None:
         if er.text and er.text.strip():
             candidate = er.text.strip()
@@ -196,13 +198,15 @@ def generate(
     versions: dict[str, ClipVersion],
     current_version: str,
     fmt: Optional[ClipFormat] = None,
+    schema_version: str = "6",
 ) -> bytes:
+    """Build a brand-new clip. Appending to an existing one goes through append_version()."""
     if fmt is None:
         fmt = ClipFormat()
 
-    now = datetime.now().strftime("%Y/%m/%d %I:%M:%S %p")
+    now = _now()
 
-    root = etree.Element("clip", type="clip", version="8")
+    root = etree.Element("clip", type="clip", version=schema_version)
     etree.SubElement(root, "name", type="string").text = clip_name
 
     root_ud = etree.SubElement(root, "userData", type="dict")
@@ -217,9 +221,41 @@ def generate(
     for i, (uid, version) in enumerate(versions.items()):
         if i >= MAX_VERSIONS:
             raise RuntimeError(f"Version count exceeds MAX_VERSIONS={MAX_VERSIONS}")
-        _append_feed(feeds, uid, version, fmt)
+        feeds.append(_build_feed(uid, version, fmt))
 
     _append_versions_block(root, versions, current_version, now)
+
+    return etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+
+
+def append_version(clip_path: str, version: ClipVersion, fmt: ClipFormat) -> bytes:
+    """Add (or replace, when its uid already exists) one version in an existing clip, in place.
+
+    Only the version's <feed> (in the track the reader reads) and its top-level <version>
+    entry are touched; everything else -- the root schema version, track names, Flame's
+    userData, other tracks, elements this module knows nothing about -- is kept as-is.
+    A replaced entry keeps its position. Whitespace is re-indented on output.
+    """
+    path = Path(clip_path)
+    root = _load(path, etree.XMLParser(remove_blank_text=True)).getroot()
+    uid = version.uid
+
+    feeds = _require(_select_track(root, clip_path), "feeds")
+    _put(feeds, "feed", "vuid", uid, _build_feed(uid, version, fmt))
+    feeds.set("currentVersion", uid)
+
+    vers_el = root.find("versions")
+    if vers_el is None:
+        # List the clip's existing feeds too, as bare <version uid=".."/> entries the way
+        # Autodesk's One_Track_Two_Versions.clip does, so they aren't left without one.
+        vers_el = etree.SubElement(root, "versions")
+        for feed in feeds.findall("feed"):
+            if feed.get("vuid") != uid:
+                etree.SubElement(vers_el, "version", uid=feed.get("vuid"))
+    old = next((v for v in vers_el.findall("version") if v.get("uid") == uid), None)
+    number = vers_el.index(old) + 1 if old is not None else len(vers_el.findall("version")) + 1
+    _put(vers_el, "version", "uid", uid, _build_version(uid, version, _now(), number))
+    vers_el.set("currentVersion", uid)
 
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
 
@@ -231,13 +267,44 @@ def _new_uid() -> str:
     return uuid.uuid4().hex
 
 
-def _append_feed(
-    feeds: etree._Element,
-    uid: str,
-    version: ClipVersion,
-    fmt: ClipFormat,
-) -> None:
-    feed = etree.SubElement(feeds, "feed", vuid=uid, uid=_new_uid())
+def _now() -> str:
+    return datetime.now().strftime("%Y/%m/%d %I:%M:%S %p")
+
+
+def _load(path: Path, parser: Optional[etree.XMLParser] = None) -> etree._ElementTree:
+    try:
+        return etree.parse(str(path), parser)
+    except etree.XMLSyntaxError as e:
+        raise ValueError(f"{path} is not valid XML: {e}") from e
+
+
+def _select_track(root: etree._Element, clip_path: str) -> etree._Element:
+    """The track the reader reads: the first video track, else the first track."""
+    tracks_el = root.find("tracks")
+    if tracks_el is None and root.find("handler") is not None:
+        raise ValueError(
+            f"{clip_path}: pattern-based clips (<handler>/ScanPattern, no <tracks>) are not supported"
+        )
+    tracks = _require(root, "tracks").findall("track")
+    if not tracks:
+        raise ValueError("Missing <track> inside <tracks>")
+    for track in tracks:
+        if (track.findtext("trackType") or "").strip().lower() == "video":
+            return track
+    return tracks[0]
+
+
+def _put(parent: etree._Element, tag: str, key: str, value: str, new_el: etree._Element) -> None:
+    """Replace parent's <tag key=value> child in place, or append new_el if there is none."""
+    for i, child in enumerate(parent):
+        if child.tag == tag and child.get(key) == value:
+            parent[i] = new_el
+            return
+    parent.append(new_el)
+
+
+def _build_feed(uid: str, version: ClipVersion, fmt: ClipFormat) -> etree._Element:
+    feed = etree.Element("feed", vuid=uid, uid=_new_uid())
 
     is_exr = fmt.file_format.upper() == "EXR"
 
@@ -288,6 +355,8 @@ def _append_feed(
         range_path = _printf_to_range(span.path, span.start_frame, span.duration)
         etree.SubElement(span_el, "path", encoding="pattern").text = range_path
 
+    return feed
+
 
 def _append_versions_block(
     root: etree._Element,
@@ -297,17 +366,22 @@ def _append_versions_block(
 ) -> None:
     vers_el = etree.SubElement(root, "versions", currentVersion=current_version)
     for i, (uid, version) in enumerate(versions.items(), start=1):
-        ver_el = etree.SubElement(vers_el, "version", uid=uid)
-        etree.SubElement(ver_el, "name").text = version.name
-        etree.SubElement(ver_el, "creationDate").text = now
-        ud = etree.SubElement(ver_el, "userData", type="dict")
-        etree.SubElement(ud, "appName", type="string").text = "ComfyUI"
-        etree.SubElement(ud, "versionNumber", type="uint64").text = str(i)
-        if version.publish_path is not None:
-            etree.SubElement(ud, "comfyWorkflow", path=version.publish_path)
+        vers_el.append(_build_version(uid, version, now, i))
 
 
-def _parse_clip(root: etree._Element, clip_name: str, schema_version: str) -> ParsedClip:
+def _build_version(uid: str, version: ClipVersion, now: str, number: int) -> etree._Element:
+    ver_el = etree.Element("version", uid=uid)
+    etree.SubElement(ver_el, "name").text = version.name
+    etree.SubElement(ver_el, "creationDate").text = now
+    ud = etree.SubElement(ver_el, "userData", type="dict")
+    etree.SubElement(ud, "appName", type="string").text = "ComfyUI"
+    etree.SubElement(ud, "versionNumber", type="uint64").text = str(number)
+    if version.publish_path is not None:
+        etree.SubElement(ud, "comfyWorkflow", path=version.publish_path)
+    return ver_el
+
+
+def _parse_clip(root: etree._Element, clip_name: str, schema_version: str, clip_path: str) -> ParsedClip:
     """Parse the clip body, shared by every schema version.
 
     Confirmed against real Flame-exported clips (schema versions 6, 7, 8,
@@ -315,11 +389,14 @@ def _parse_clip(root: etree._Element, clip_name: str, schema_version: str) -> Pa
     top-level <versions> block (metadata only: name, creationDate,
     batchSetup, etc.) is always a sibling of <tracks>, never nested inside
     <track>. There is no structural difference between schema versions.
+
+    Reads the first video track (Autodesk's examples include audio and
+    multi-layer tracks). A <feeds> without currentVersion (common in those
+    examples) falls back to the top-level <versions currentVersion>, then to
+    the first feed.
     """
-    feeds_el = _require(
-        _require(_require(root, "tracks"), "track"), "feeds"
-    )
-    current_version = feeds_el.get("currentVersion", "")
+    feeds_el = _require(_select_track(root, clip_path), "feeds")
+    versions_el = root.find("versions")
     versions: dict[str, ClipVersion] = {}
 
     for i, feed in enumerate(feeds_el.findall("feed")):
@@ -331,7 +408,12 @@ def _parse_clip(root: etree._Element, clip_name: str, schema_version: str) -> Pa
         spans = _parse_spans(feed, uid)
         versions[uid] = ClipVersion(uid=uid, name=uid, spans=spans)
 
-    versions_el = root.find("versions")
+    current_version = (
+        feeds_el.get("currentVersion")
+        or (versions_el.get("currentVersion") if versions_el is not None else None)
+        or next(iter(versions), "")
+    )
+
     if versions_el is not None:
         for ver_el in versions_el.findall("version"):
             uid = ver_el.get("uid", "")
@@ -358,6 +440,9 @@ def _parse_spans(feed: etree._Element, version_uid: str) -> list[ClipSpan]:
         if i >= MAX_SPANS:
             raise RuntimeError(f"Span count exceeds MAX_SPANS={MAX_SPANS}")
         path_el = span.find("path")
+        if path_el is None:
+            # Stereo: <paths><path subFeedId="Left">…<path subFeedId="Right">…; read the first eye.
+            path_el = span.find("paths/path")
         if path_el is None:
             raise ValueError(f"Span {i} in version '{version_uid}' is missing <path>")
 

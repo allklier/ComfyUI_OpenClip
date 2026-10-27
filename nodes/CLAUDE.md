@@ -37,7 +37,7 @@ Knowing *which* files to stat is the awkward part when `clip_path` is linked. It
 | `frame_count` | `INT` | Number of frames loaded |
 | `width` | `INT` | Frame width in pixels |
 | `height` | `INT` | Frame height in pixels |
-| `format_version` | `STRING` | OpenClip schema version detected (`"8"` or `"9"`) — the `version="…"` attribute on the root `<clip>` element, **not** a feed/version name like `v002`. |
+| `format_version` | `STRING` | OpenClip schema version detected (e.g. `"6"`–`"9"`; wire into Writer's `format_version` to write a new clip at the same schema) — the `version="…"` attribute on the root `<clip>` element, **not** a feed/version name like `v002`. |
 | `version_name` | `STRING` | The **resolved** feed version actually loaded, e.g. `v002` — never the literal `"current"`, even when the `version` input was `"current"`. Wire into Writer's `version_name` if the Writer should follow the Reader's version numbering. |
 | `start_frame` | `INT` | Actual first frame number used (resolved from span or explicit input) |
 | `clip_path` | `STRING` | Pass-through of the resolved input clip path — wire into Writer's `clip_path` |
@@ -71,7 +71,7 @@ Leave Writer's `version_name` at its default `"next"` (don't wire `Reader.versio
 
 Writes a frame sequence and generates a valid OpenClip `.clip` XML package.
 
-OpenClip XML is always written as version 8 (v9 is not yet released by Autodesk).
+A new `.clip` is written as schema `version="6"` by default (set by `format_version`); appending to an existing `.clip` edits it in place and keeps its own schema version and all of Flame's metadata — see `CLAUDE.md`'s design-decisions table (issue #4).
 
 **Inputs**
 
@@ -81,6 +81,7 @@ OpenClip XML is always written as version 8 (v9 is not yet released by Autodesk)
 | `MASK` | `MASK` | Optional alpha; merged into EXR alpha channel if connected |
 | `CLIP_METADATA` | `CLIP_METADATA` | Optional EXR header metadata to write into output frames (e.g. tape name, timecodes). Only applied when connected; writer format settings (compression, etc.) always override any matching keys. |
 | `aov_chain` | `AOV_WRITE_CHAIN` | Optional. Feed the last `OpenClipAOVWriter` in a daisy-chain here — see `OpenClipAOVWriter` below. Each entry becomes a real named EXR part/subimage (or a separate sibling file, depending on `aov_layout`), not a channel-name convention. |
+| `format_version` | `STRING` | Optional, default `"6"` (added 2026-10-27, issue #4). Root `<clip version="…">` for a **new** `.clip`; allowed `5`–`9`, anything else raises before anything is written. Wire `OpenClipReader.format_version` in to match a source clip. Ignored (with a printed warning if it differs) when appending to an existing `.clip`, which keeps its own version. Last optional input, so saved workflows' widget order is unchanged. |
 | `colour_space` | `STRING` | Optional, default `"Rec.1886 Rec.709 - Display"` (added 2026-10-04 — previously a bare Python default, unwireable from any reader). Sets the `.clip` XML's own declared format colour space (`ClipFormat.colour_space`). This is **not** the same pipe as the colour-space round trip that already works via `CLIP_METADATA`'s `oiio:ColorSpace`/`openclip:ColorSpace` EXR header keys (see `CLAUDE.md`'s design-decisions table) — nothing currently reads `ClipFormat.colour_space` back out on the Reader side. |
 | `aov_layout` | `COMBO` | `Multichannel` (default) writes each `aov_chain` entry as its own named subimage in the same file as beauty — a true multi-part EXR, matching the real-world convention (see `lib/CLAUDE.md` "AOV Channel Handling"), not the old single-part-many-channels scheme. `Separate Files` writes one extra `<clip_name>_AOV_<name>.####.ext` sibling file per entry instead, `name` taken directly from the chain entry (sanitized for filesystem safety) rather than a fixed suffix table. A non-empty `aov_chain` with `file_format="PNG"` raises `ValueError` — PNG's 8-bit path would silently corrupt AOV data. |
 | `clip_path` | `STRING` | Folder path for the output package. If a `.clip` file path is supplied (e.g. wired from Reader), the parent directory is used automatically. |

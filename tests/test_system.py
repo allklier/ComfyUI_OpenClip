@@ -67,7 +67,7 @@ def test_read_v8_clip_end_to_end(tmp_path):
     assert frame_count == 4
     assert width == 64
     assert height == 64
-    assert format_version == "8"
+    assert format_version == "6"  # generate()'s default schema version (issue #4)
     assert fps == 24.0  # _clip_with_seq() calls generate() with fmt=None, defaulting to ClipFormat().fps
 
 
@@ -861,3 +861,67 @@ def test_colour_space_empty_when_not_carried(tmp_path):
     )
     out = _reader_result(clip_path)
     assert out["colour_space"] == ""
+
+
+# --- Autodesk's published Open Clip examples (issue #4) ---
+#
+# tests/fixtures/autodesk_examples/ is gitignored (Autodesk's files, not ours to redistribute), so
+# these skip cleanly where it is absent. Media paths inside are relative to each .clip.
+
+AUTODESK_DIR = Path(__file__).parent / "fixtures" / "autodesk_examples"
+
+_PATTERN = "pattern-based clips .* are not supported"
+_MOVIE = r"OpenClip_v001\.mov: movie containers are not supported"
+
+# file -> (frame_count, start_frame, version_name, media file stem) or an error regex
+AUTODESK_EXPECTED = {
+    "Broken_Sequence.clip": _PATTERN,
+    "Colour_Management.clip": _MOVIE,
+    "Metadata_Edits.clip": r"Metadata_Edits\.clip is not valid XML",
+    "MultiChannel.clip": (11, 86400, "v0", "Beauty"),          # first video track
+    "One_Track.clip": _MOVIE,
+    "One_Track_Multiple_Spans.clip": (4, 86400, "v0", "OpenClip_v001"),  # spans[0] only
+    "One_Track_Two_Versions.clip": (11, 86400, "version1", "OpenClip_v001"),
+    "Pattern_Clip.clip": _PATTERN,
+    "Pattern_MultiFormat.clip": _PATTERN,
+    "Stereo_Clip.clip": (11, 86400, "v0", "OpenClip_Left"),     # left eye
+    "Timing_Versions.clip": (5, 86404, "OpenClip_v003", "OpenClip_v003"),
+    "Two_Tracks_AV.clip": (11, 86400, "v0", "OpenClip_v001"),  # video track, audio ignored
+}
+
+
+def test_autodesk_expectations_cover_every_example():
+    if not AUTODESK_DIR.is_dir():
+        pytest.skip("tests/fixtures/autodesk_examples/ not present (gitignored)")
+    assert sorted(p.name for p in AUTODESK_DIR.glob("*.clip")) == sorted(AUTODESK_EXPECTED)
+
+
+@pytest.mark.parametrize("name", sorted(AUTODESK_EXPECTED))
+def test_autodesk_example(name):
+    clip = AUTODESK_DIR / name
+    if not clip.exists():
+        pytest.skip("tests/fixtures/autodesk_examples/ not present (gitignored)")
+    expected = AUTODESK_EXPECTED[name]
+    kw = dict(clip_path=str(clip), version="current", start_frame=-1, end_frame=-1, path_from="", path_to="")
+    if isinstance(expected, str):
+        with pytest.raises(ValueError, match=expected):
+            OpenClipReader().execute(**kw)
+        return
+    n, start, version_name, stem = expected
+    r = OpenClipReader().execute(**kw)["result"]
+    images, frame_count, width, height = r[0], r[2], r[3], r[4]
+    assert (frame_count, width, height) == (n, 1920, 1080)
+    assert images.shape == (n, 1080, 1920, 3)
+    assert (r[5], r[6], r[7]) == ("9", version_name, start)
+    assert r[9] == clip.stem  # no root <name> in any of these -> file stem
+    assert Path(r[11]["abs_pattern"]).name.startswith(stem + ".")
+    assert r[13] == 24.0  # no <editRate> -> default
+
+
+def test_autodesk_movie_clips_still_parse():
+    clip = AUTODESK_DIR / "One_Track.clip"
+    if not clip.exists():
+        pytest.skip("tests/fixtures/autodesk_examples/ not present (gitignored)")
+    parsed = openclip_xml.parse(str(clip))
+    assert parsed.current_version == "v0"
+    assert parsed.versions["v0"].spans[0].path == "Media/MOV/OpenClip_v001.mov"

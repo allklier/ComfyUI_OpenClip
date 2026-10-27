@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from lxml import etree
 
 from ComfyUI_OpenClip.lib import image_io, openclip_xml
 from ComfyUI_OpenClip.lib.openclip_xml import ClipSpan, ClipVersion
@@ -154,9 +155,11 @@ def test_writer_colour_space_xml_pipe_is_independent_of_the_exr_header_pipe(tmp_
 
 def test_writer_colour_space_of_a_second_version_is_not_validated_against_the_first(tmp_path):
     # Characterisation: only width/height/fps/file_format are format-mismatch checked on merge.
+    # Since appends are in place (issue #4), each version's feed keeps its own colour space.
     _write(tmp_path, colour_space="ACEScg")
     clip = _write(tmp_path, colour_space="sRGB")
-    assert openclip_xml.read_format(clip).colour_space == "sRGB"
+    spaces = [e.text for e in etree.parse(clip).iter("colourSpace")]
+    assert spaces == ["ACEScg", "sRGB"]
 
 
 # --- CLIP_METADATA carry-through --------------------------------------------------------------------------
@@ -348,3 +351,197 @@ def test_reader_available_versions_text_for_many_versions_is_sorted_with_current
 def test_reader_schema_version_output_round_trips_v9_fixture_name(v9_single_clip):
     parsed = openclip_xml.parse(str(v9_single_clip))
     assert parsed.schema_version == "9"
+
+
+# --- issue #4: schema version and append-in-place ---------------------------------------------------------
+
+# Modeled on a real Flame 2025 export (schema 6) from the shared corpus, cut down to 8x8 so the
+# writer's format-mismatch check passes, plus an audio track and an element this project knows
+# nothing about. Every one of these must survive an append untouched.
+FLAME_CLIP = """<?xml version="1.0" encoding="UTF-8"?>
+<clip type="clip" version="{schema}">
+\t<name type="string">s</name>
+\t<userData type="dict">
+\t\t<appName type="binary">AutodeskÂ® FlameÂ®</appName>
+\t\t<appVersion type="string">2025.2.1</appVersion>
+\t\t<module type="string">Batch</module>
+\t</userData>
+\t<sourceName type="string">ReelName</sourceName>
+\t<tracks>
+\t\t<track uid="89504a4c507049c0bbb0489ca799e0f1">
+\t\t\t<trackType>video</trackType>
+\t\t\t<editRate type="rate">25</editRate>
+\t\t\t<name type="string">s_track</name>
+\t\t\t<feeds currentVersion="v02">
+\t\t\t\t<feed vuid="v01" uid="aaa1">
+\t\t\t\t\t<storageFormat type="format">
+\t\t\t\t\t\t<type>video</type>
+\t\t\t\t\t\t<colourSpace type="string">Rec.709 video</colourSpace>
+\t\t\t\t\t\t<height type="uint">8</height>
+\t\t\t\t\t\t<rowOrdering type="string">down</rowOrdering>
+\t\t\t\t\t\t<width type="uint">8</width>
+\t\t\t\t\t</storageFormat>
+\t\t\t\t\t<userData type="dict">
+\t\t\t\t\t\t<recordTimecode type="time" label="00:00:00:00"><rate>25</rate><nbTicks>0</nbTicks><dropMode>NDF</dropMode></recordTimecode>
+\t\t\t\t\t</userData>
+\t\t\t\t\t<sampleRate>25</sampleRate>
+\t\t\t\t\t<spans><span><path encoding="pattern">/Volumes/LocalJobs/s/s__v01.[000001-000078].exr</path></span></spans>
+\t\t\t\t</feed>
+\t\t\t\t<feed vuid="v02" uid="aaa2">
+\t\t\t\t\t<storageFormat type="format"><type>video</type><height type="uint">8</height><width type="uint">8</width></storageFormat>
+\t\t\t\t\t<spans><span><path encoding="pattern">/Volumes/LocalJobs/s/s__v02.[000001-000078].exr</path></span></spans>
+\t\t\t\t</feed>
+\t\t\t</feeds>
+\t\t</track>
+\t\t<track uid="t1">
+\t\t\t<trackType>audio</trackType>
+\t\t\t<feeds><feed vuid="v01" uid="f9"><spans><span><path encoding="file">audio.wav</path></span></spans></feed></feeds>
+\t\t</track>
+\t</tracks>
+\t<versions currentVersion="v02">
+\t\t<version uid="v01">
+\t\t\t<name>v01</name>
+\t\t\t<creationDate>2024/12/22 12:21:46 PM</creationDate>
+\t\t\t<batchSetup type="string">/opt/batch/s_v01.batch</batchSetup>
+\t\t\t<userData type="dict"><appName type="binary">Flame</appName><versionNumber type="uint64">1</versionNumber></userData>
+\t\t</version>
+\t\t<version uid="v02">
+\t\t\t<name>v02</name>
+\t\t\t<creationDate>2024/12/22 12:30:00 PM</creationDate>
+\t\t\t<userData type="dict"><versionNumber type="uint64">2</versionNumber></userData>
+\t\t</version>
+\t</versions>
+</clip>
+"""
+
+
+def _flame_clip(tmp_path, schema="6") -> Path:
+    clip = tmp_path / "s" / "s.clip"
+    clip.parent.mkdir(parents=True)
+    clip.write_text(FLAME_CLIP.format(schema=schema), encoding="utf-8")
+    return clip
+
+
+def _assert_original_preserved(before: etree._Element, after: etree._Element, path="clip"):
+    """Every element of `before` is still at the same child index in `after`, with the same text
+    and attributes (bar currentVersion, which an append moves on purpose). `after` may have
+    extra children appended after the originals."""
+    strip = lambda a: {k: v for k, v in a.items() if k != "currentVersion"}
+    assert after.tag == before.tag, path
+    assert (after.text or "").strip() == (before.text or "").strip(), path
+    assert strip(after.attrib) == strip(before.attrib), path
+    assert len(after) >= len(before), path
+    for i, child in enumerate(before):
+        _assert_original_preserved(child, after[i], f"{path}/{child.tag}[{i}]")
+
+
+def _feeds_and_versions(root):
+    track = root.find("tracks/track")
+    return ([f.get("vuid") for f in track.find("feeds")], [v.get("uid") for v in root.find("versions")])
+
+
+def test_new_clip_defaults_to_schema_version_6(tmp_path):
+    clip = _write(tmp_path)
+    assert etree.parse(clip).getroot().get("version") == "6"
+
+
+@pytest.mark.parametrize("value, expected", [("8", "8"), (" 9 ", "9"), ("5", "5"), ("", "6")])
+def test_new_clip_uses_explicit_format_version(tmp_path, value, expected):
+    clip = _write(tmp_path, format_version=value)
+    assert etree.parse(clip).getroot().get("version") == expected
+    assert _read(clip)[5] == expected  # Reader.format_version -> wireable straight back in
+
+
+@pytest.mark.parametrize("bad", ["10", "v8", "8.0", "4"])
+def test_invalid_format_version_raises_before_anything_touches_disk(tmp_path, bad):
+    with pytest.raises(ValueError, match="format_version"):
+        _write(tmp_path, format_version=bad)
+    assert list(tmp_path.rglob("*")) == []
+
+
+def test_invalid_format_version_on_append_leaves_the_existing_package_alone(tmp_path):
+    clip = _write(tmp_path)
+    before = sorted(p for p in tmp_path.rglob("*"))
+    text = Path(clip).read_text()
+    with pytest.raises(ValueError, match="format_version"):
+        _write(tmp_path, format_version="x")
+    assert sorted(p for p in tmp_path.rglob("*")) == before
+    assert Path(clip).read_text() == text
+
+
+def test_append_to_our_own_v6_clip_keeps_v6_and_adds_one_feed_and_version(tmp_path):
+    clip = _write(tmp_path)
+    clip = _write(tmp_path, format_version="")
+    root = etree.parse(clip).getroot()
+    assert root.get("version") == "6"
+    assert _feeds_and_versions(root) == (["v001", "v002"], ["v001", "v002"])
+    assert root.find("versions/version[@uid='v002']/userData/versionNumber").text == "2"
+
+
+@pytest.mark.parametrize("schema", ["6", "7", "8"])
+def test_append_to_flame_clip_preserves_schema_and_flame_metadata(tmp_path, schema):
+    clip = _flame_clip(tmp_path, schema)
+    before = etree.parse(str(clip), etree.XMLParser(remove_blank_text=True)).getroot()
+    _write(tmp_path, fps=25.0, format_version="")
+    root = etree.parse(str(clip), etree.XMLParser(remove_blank_text=True)).getroot()
+
+    assert root.get("version") == schema
+    _assert_original_preserved(before, root)
+    assert _feeds_and_versions(root) == (["v01", "v02", "v03"], ["v01", "v02", "v03"])
+    assert root.find("tracks/track/feeds").get("currentVersion") == "v03"
+    assert root.find("versions").get("currentVersion") == "v03"
+    assert root.find("versions/version[@uid='v03']/userData/versionNumber").text == "3"
+    # The audio track and Flame's own text (including its double-encoded "AutodeskÂ®") are untouched.
+    assert [f.get("vuid") for f in root.find("tracks").findall("track")[1].find("feeds")] == ["v01"]
+    assert root.findtext("userData/appName") == "AutodeskÂ® FlameÂ®"
+    assert _read(str(clip), version="v03")[2] == 2
+
+
+def test_append_creates_versions_block_when_the_clip_has_none(tmp_path):
+    clip = _flame_clip(tmp_path)
+    root = etree.parse(str(clip)).getroot()
+    root.remove(root.find("versions"))
+    clip.write_bytes(etree.tostring(root))
+    _write(tmp_path, fps=25.0)
+    root = etree.parse(str(clip)).getroot()
+    # Existing feeds get bare <version uid=".."/> entries, as in Autodesk's One_Track_Two_Versions.clip.
+    assert _feeds_and_versions(root) == (["v01", "v02", "v03"], ["v01", "v02", "v03"])
+    assert root.find("versions").get("currentVersion") == "v03"
+
+
+def test_overwrite_replaces_feed_and_version_in_place(tmp_path):
+    clip = _flame_clip(tmp_path)
+    _write(tmp_path, fps=25.0, version_name="v01", overwrite=True)
+    root = etree.parse(str(clip)).getroot()
+    assert root.get("version") == "6"
+    assert _feeds_and_versions(root) == (["v01", "v02"], ["v01", "v02"])  # same order, no duplicate
+    feed = root.find("tracks/track/feeds/feed")
+    assert "versions/v01/s." in feed.findtext("spans/span/path")
+    version = root.find("versions/version")
+    assert version.find("batchSetup") is None  # the replaced version's entry is ours now
+    assert version.findtext("userData/versionNumber") == "1"
+    # The untouched version keeps Flame's data.
+    assert root.findtext("versions/version[@uid='v02']/creationDate") == "2024/12/22 12:30:00 PM"
+    assert root.find("tracks/track/feeds").get("currentVersion") == "v01"
+
+
+def test_wired_format_version_that_differs_on_append_warns_and_keeps_the_files(tmp_path, capsys):
+    clip = _flame_clip(tmp_path, "7")
+    _write(tmp_path, fps=25.0, format_version="8")
+    assert etree.parse(str(clip)).getroot().get("version") == "7"
+    out = capsys.readouterr().out
+    assert "WARNING: format_version '8' ignored" in out and "'7'" in out
+
+
+def test_matching_format_version_on_append_does_not_warn(tmp_path, capsys):
+    _flame_clip(tmp_path, "6")
+    _write(tmp_path, fps=25.0, format_version="6")
+    assert "WARNING" not in capsys.readouterr().out
+
+
+def test_format_version_input_is_optional_and_last():
+    # Appended last so saved workflows' positional widgets_values stay valid.
+    types = OpenClipWriter.INPUT_TYPES()
+    assert list(types["optional"])[-1] == "format_version"
+    assert types["optional"]["format_version"] == ("STRING", {"default": "6"})
+    assert "format_version" not in types["required"]

@@ -10,6 +10,11 @@ import torch
 from ..lib import image_io, openclip_xml, package_layout
 from ..lib.openclip_xml import ClipFormat, ClipSpan, ClipVersion
 
+# Root <clip version="..."> values accepted for a new clip. 6 is the default: Flame 2024
+# imported the identical file once version="8" was changed to "6" (issue #4).
+FORMAT_VERSIONS = ("5", "6", "7", "8", "9")
+DEFAULT_FORMAT_VERSION = "6"
+
 
 class OpenClipWriter:
     @classmethod
@@ -37,6 +42,12 @@ class OpenClipWriter:
                 "CLIP_METADATA": ("CLIP_METADATA",),
                 "aov_chain": ("AOV_WRITE_CHAIN",),
                 "colour_space": ("STRING", {"default": "Rec.1886 Rec.709 - Display"}),
+                # Open Clip schema version for a *new* .clip (root <clip version="...">); wire
+                # OpenClipReader.format_version here to match a source clip. Appending to an
+                # existing .clip always keeps that file's own version. Default 6 because Flame
+                # 2024 rejects version="8" clips (issue #4). Appended last so saved workflows'
+                # positional widgets_values stay valid.
+                "format_version": ("STRING", {"default": DEFAULT_FORMAT_VERSION}),
             },
             "hidden": {
                 "extra_pnginfo": "EXTRA_PNGINFO",
@@ -72,6 +83,7 @@ class OpenClipWriter:
         MASK: Optional[torch.Tensor] = None,
         CLIP_METADATA: Optional[dict] = None,
         aov_chain: Optional[list] = None,
+        format_version: str = DEFAULT_FORMAT_VERSION,
         extra_pnginfo: Optional[dict] = None,
         prompt=None,
     ):
@@ -104,6 +116,16 @@ class OpenClipWriter:
         # Everything that can reject this write is checked before any directory or frame
         # touches the disk, so a refused run never leaves orphan frames behind.
         fps_label = openclip_xml.fps_label_from_float(fps)
+        format_version = format_version.strip()
+        if format_version and format_version not in FORMAT_VERSIONS:
+            raise ValueError(
+                f"[OpenClipWriter] format_version '{format_version}' is not supported. Valid: {list(FORMAT_VERSIONS)}"
+            )
+        if existing is not None and format_version and format_version != existing.schema_version:
+            print(
+                f"[OpenClipWriter] WARNING: format_version '{format_version}' ignored -- appending to "
+                f"'{probe.clip_file}', which keeps its own schema version '{existing.schema_version}'"
+            )
         n_frames, height, width = IMAGE.shape[0], IMAGE.shape[1], IMAGE.shape[2]
         fmt = ClipFormat(
             width=width,
@@ -149,9 +171,12 @@ class OpenClipWriter:
         )
 
         if paths.clip_file.exists():
-            xml_bytes = _merge_version(paths.clip_file, clip_name, version_name, new_version, fmt)
+            xml_bytes = _merge_version(paths.clip_file, new_version, fmt)
         else:
-            xml_bytes = openclip_xml.generate(clip_name, {version_name: new_version}, version_name, fmt)
+            xml_bytes = openclip_xml.generate(
+                clip_name, {version_name: new_version}, version_name, fmt,
+                schema_version=format_version or DEFAULT_FORMAT_VERSION,
+            )
         paths.clip_file.write_bytes(xml_bytes)
         print(f"[OpenClipWriter] Wrote clip file: {paths.clip_file}")
 
@@ -160,19 +185,17 @@ class OpenClipWriter:
 
 def _merge_version(
     clip_file: Path,
-    clip_name: str,
-    version_name: str,
     new_version: ClipVersion,
     fmt: ClipFormat,
 ) -> bytes:
-    existing = openclip_xml.parse(str(clip_file))
+    """Add new_version to an existing clip in place, keeping everything else in the file
+    (schema version, Flame's track/version metadata, other tracks) -- see append_version."""
     existing_fmt = openclip_xml.read_format(str(clip_file))
     mismatches = _format_mismatches(existing_fmt, fmt)
     if mismatches:
         detail = ", ".join(f"{k}: existing={old} new={nw}" for k, old, nw in mismatches)
         raise ValueError(f"Format mismatch with '{clip_file.name}': {detail}")
-    merged = {**existing.versions, version_name: new_version}
-    return openclip_xml.generate(clip_name, merged, version_name, fmt)
+    return openclip_xml.append_version(str(clip_file), new_version, fmt)
 
 
 def _format_mismatches(
