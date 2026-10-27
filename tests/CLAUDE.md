@@ -110,6 +110,8 @@ AOV fixtures (`aov_pixels`, `aov_multipart_fixtures`, `write_multipart_exr`, `co
 | `test_flat_creates_dirs` | Same for flat layout |
 | `test_path_tokens_relative_to_clip` | Media path token in XML is relative; resolves correctly from the `.clip` file's directory |
 | `test_unknown_layout_raises` | Passing an unknown layout name raises `ValueError` |
+| `test_standard_flame_version_in_filename_is_flames_own_layout`, `test_flat_version_in_filename_uses_underscore` | Toggle on → `<clip>/<clip>_<version>.%04d.ext` beside `<clip>.clip` (Flame's layout); `_` separator in Flat too |
+| `test_existing_legacy_standard_clip_keeps_its_layout`, `test_new_layout_clip_wins_over_a_legacy_one` | Pre-2026-10-27 `<clip>/<clip>.clip` + `versions/` is detected and kept; a new-layout clip takes precedence if both exist |
 
 ### `test_colour_transform.py`
 
@@ -245,6 +247,7 @@ Contract being locked in: **fail loudly and name the file; never return a plausi
 | `test_publish_*` | Publish without workflow info; sidecar + reference survive a later non-publish version |
 | `test_reader_auto_remaps_...`, `test_reader_explicit_path_remap`, `test_reader_wrong_explicit_remap_fails_loudly` | Foreign absolute media roots through the Reader node |
 | `test_new_clip_*`, `test_invalid_format_version_*`, `test_append_*`, `test_overwrite_replaces_feed_and_version_in_place`, `test_wired_format_version_*`, `test_matching_format_version_*`, `test_format_version_input_is_optional_and_last` | Issue #4: new clip defaults to schema 6 / explicit value; invalid value raises before disk; appending keeps the schema and every Flame element (`FLAME_CLIP` fixture modelled on a real v6 corpus clip, incl. audio track and double-encoded "AutodeskÂ®") and adds exactly one feed + one version; overwrite replaces in place; differing wired value warns and keeps the file's |
+| `test_append_to_legacy_standard_clip_keeps_the_old_layout`, `test_overwrite_with_version_in_filename_also_removes_old_dot_named_frames` | Old-layout clips stay appendable (new version lands in `versions/<v>/`, both versions readable); overwrite with the toggle on also clears `<clip>.<version>.*` frames from before the separator change |
 | `test_reader_reads_a_static_still_clip`, `test_reader_uses_only_the_first_span_...`, `test_parse_generate_round_trip_keeps_a_multi_span_version`, `test_reader_available_versions_text_...` | Static-image clip end to end, multi-span behaviour (Reader reads `spans[0]` only), version list text |
 
 ### Bugs found 2026-10-24, fixed in 1.0.1 (xfail markers removed)

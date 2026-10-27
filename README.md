@@ -21,8 +21,20 @@ If a specific version should be read, rather than 'current', run the Reader once
 ### OpenClip Writer
 Writes an image sequence and generates a `.clip` XML manifest that Flame can import.
 
-At the top level based on path there is the .clip XML manifest.
-It has a versions subfolder, which contains a folder of EXR files per version present.
+With the default `Standard Flame` layout, the `.clip` file is written into the folder given by the path, next to a folder of the same name that holds the frames:
+
+```
+include_version_in_filename off          include_version_in_filename on  (Flame-compatible)
+<path>/                                  <path>/
+  foo.clip                                 foo.clip
+  foo/                                     foo/
+    v001/foo.1001.exr …                      foo_v001.1001.exr …
+    v002/foo.1001.exr …                      foo_v002.1001.exr …
+```
+
+**Turning `include_version_in_filename` on gives the same layout Flame itself uses for its Open Clip exports**, so ComfyUI versions sit alongside Flame's own in the same folder. With it off, each version gets its own subfolder.
+
+Clips written by earlier releases (`foo/foo.clip` with a `versions/` subfolder) can still be read and appended to; new versions added to such a clip keep that older layout.
 
 Various options can be set to configure the clip and the EXR file generation. If the OpenClips are used in a round-trip scenario from Flame, many parameters can be piped through from the read node. (see example 1 in screenshots below).
 
@@ -38,14 +50,14 @@ The write node has the follwing inputs/settings:
 - clip_filename: filename of the .clip file. This uses a pattern, referencing the other clip settings to construct the full filename. Default is: `$(path)/$(clip_name).clip`.
 - version_name: the text string of the version. The default of 'next' will allocate the next version, or start with v001.
 - overwrite: whether existing versions are allowed to be overwritten. If the latest version is 'v003', and the version_name is also set to 'v003', the existing version 'v003' will be deleted and a new version will be written. If disabled, writing an existing version number results in an error.
-- include_version_in_filename: whether to include the 'v003' version in the EXR filenaming convention. As each version is written into separate folders, this is optional, but common practice in some pipelines.
+- include_version_in_filename: adds the version to the frame filenames (`foo_v003.1001.exr`) and puts all versions' frames in one folder — the layout Flame uses for its own Open Clip exports (recommended when working alongside Flame). Off: one subfolder per version, version not in the filename.
 - fps: the frame rate to place into the clip metadata (must match a standard rate such as 23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60).
 - start_frame: the number of the first written frame.
 - frame_padding: how many zeros to put in front of short frame numbers.
 - file_format: choose between EXR and PNG (AOVs require EXR).
 - exr_bit_depth, exr_compression: EXR specific.
 - aov_layout: `Multichannel` writes each AOV as a named part inside the same EXR file; `Separate Files` writes one extra `<name>_AOV_<aov>.####.exr` file per AOV.
-- publish: if selected, a copy of the JSON file of the current ComfyUI workflow will be copied into the version folder.
+- publish: if selected, a copy of the JSON file of the current ComfyUI workflow will be copied next to the version's frames.
 
 The Writer checks the frame rate and the format of an existing clip (size, frame rate, file format) before writing anything, so a refused run leaves nothing on disk.
 

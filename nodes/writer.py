@@ -91,7 +91,7 @@ class OpenClipWriter:
             clip_path.strip(), clip_name.strip(), clip_filename.strip()
         )
 
-        # clip_file's location doesn't depend on version_name in either layout (see
+        # clip_file's location doesn't depend on version_name in any layout (see
         # package_layout.build), so this probe build only locates it to check existing
         # versions before "next" is resolved and before a collision can be detected.
         probe = package_layout.build(
@@ -144,16 +144,18 @@ class OpenClipWriter:
                 raise ValueError(f"Format mismatch with '{probe.clip_file.name}': {detail}")
 
         paths = package_layout.build(
-            layout, output_dir, clip_name, version_name, file_format, frame_padding
+            layout, output_dir, clip_name, version_name, file_format, frame_padding,
+            version_in_filename=include_version_in_filename,
         )
         package_layout.create_dirs(paths)
 
-        frame_stem = f"{clip_name}.{version_name}" if include_version_in_filename else clip_name
-
         if version_exists and overwrite:
-            _delete_existing_frames(paths.media_dir, frame_stem, file_format)
+            _delete_existing_frames(paths.media_dir, paths.frame_stem, file_format)
+            if include_version_in_filename:
+                # Versions written before 2026-10-27 used "<clip>.<version>" frame names.
+                _delete_existing_frames(paths.media_dir, f"{clip_name}.{version_name}", file_format)
 
-        abs_pattern = str(paths.media_dir / f"{frame_stem}.%0{frame_padding}d.{file_format.lower()}")
+        abs_pattern = str(paths.media_dir / f"{paths.frame_stem}.%0{frame_padding}d.{file_format.lower()}")
         image_io.write_sequence(
             abs_pattern, IMAGE, MASK, start_frame, file_format, exr_bit_depth, exr_compression,
             metadata=CLIP_METADATA, aov_entries=aov_chain, aov_layout=aov_layout,

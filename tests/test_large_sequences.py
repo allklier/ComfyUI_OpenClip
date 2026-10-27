@@ -150,7 +150,7 @@ def test_writer_next_version_many_times_stays_sequential(tmp_path):
               exr_compression="ZIP")
     for _ in range(12):
         OpenClipWriter().execute(IMAGE=torch.rand(1, 8, 8, 3), **kw)
-    parsed = openclip_xml.parse(str(tmp_path / "s" / "s.clip"))
+    parsed = openclip_xml.parse(str(tmp_path / "s.clip"))
     assert list(parsed.versions) == [f"v{i:03d}" for i in range(1, 13)]
     assert parsed.current_version == "v012"
 

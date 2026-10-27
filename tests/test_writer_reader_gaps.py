@@ -86,7 +86,7 @@ def test_normalize_to_folder():
 def test_writer_dotdot_destination_lands_beside_the_source(tmp_path):
     (tmp_path / "src").mkdir()
     clip = _write(tmp_path, clip_path=str(tmp_path / "src"), clip_filename="$(path)/../out/$(clip_name).clip")
-    assert Path(clip) == tmp_path / "out" / "s" / "s.clip"
+    assert Path(clip) == tmp_path / "out" / "s.clip"
 
 
 def test_writer_suffix_pattern_names_clip_and_frames_alike(tmp_path):
@@ -223,11 +223,11 @@ def test_collision_leaves_existing_frames_and_clip_untouched(tmp_path):
 def test_overwrite_of_one_version_leaves_other_versions_frames_alone(tmp_path):
     for _ in range(2):
         clip = _write(tmp_path, n=3)
-    v1 = sorted((Path(clip).parent / "versions" / "v001").glob("*.exr"))
+    v1 = sorted((Path(clip).parent / "s" / "v001").glob("*.exr"))
     stamp = [p.stat().st_mtime_ns for p in v1]
     _write(tmp_path, n=1, version_name="v002", overwrite=True)
-    assert [p.stat().st_mtime_ns for p in sorted((Path(clip).parent / "versions" / "v001").glob("*.exr"))] == stamp
-    assert len(list((Path(clip).parent / "versions" / "v002").glob("*.exr"))) == 1
+    assert [p.stat().st_mtime_ns for p in sorted((Path(clip).parent / "s" / "v001").glob("*.exr"))] == stamp
+    assert len(list((Path(clip).parent / "s" / "v002").glob("*.exr"))) == 1
     assert openclip_xml.parse(clip).versions["v002"].spans[0].duration == 1
 
 
@@ -253,7 +253,7 @@ def test_include_version_in_filename_and_overwrite_delete_only_that_versions_fra
     clip = _write(tmp_path, include_version_in_filename=True, layout="Flat")  # v002 in the same flat dir
     _write(tmp_path, include_version_in_filename=True, layout="Flat", version_name="v002", overwrite=True, n=1)
     names = sorted(p.name for p in Path(clip).parent.glob("*.exr"))
-    assert names == ["s.v001.0001.exr", "s.v001.0002.exr", "s.v002.0001.exr"]
+    assert names == ["s_v001.0001.exr", "s_v001.0002.exr", "s_v002.0001.exr"]
 
 
 # --- publish ---------------------------------------------------------------------------------------------------
@@ -545,3 +545,38 @@ def test_format_version_input_is_optional_and_last():
     assert list(types["optional"])[-1] == "format_version"
     assert types["optional"]["format_version"] == ("STRING", {"default": "6"})
     assert "format_version" not in types["required"]
+
+
+# --- Standard Flame layout change (2026-10-27): old-layout clips stay readable and appendable ---
+
+def _legacy_clip(tmp_path, stem="s"):
+    """A clip as the Writer wrote it before 2026-10-27: s/s.clip + s/versions/v001/<stem>.####.exr."""
+    media = tmp_path / "s" / "versions" / "v001"
+    media.mkdir(parents=True)
+    image_io.write_sequence(str(media / f"{stem}.%04d.exr"), torch.rand(2, 8, 8, 3), None, 1,
+                            "EXR", "half (16-bit)", "ZIP")
+    clip = tmp_path / "s" / "s.clip"
+    clip.write_bytes(openclip_xml.generate("s", {"v001": ClipVersion(
+        uid="v001", name="v001",
+        spans=[ClipSpan(path=f"versions/v001/{stem}.%04d.exr", start_frame=1, duration=2)])}, "v001"))
+    return clip
+
+
+@pytest.mark.parametrize("version_in_filename", [False, True])
+def test_append_to_legacy_standard_clip_keeps_the_old_layout(tmp_path, version_in_filename):
+    clip = _legacy_clip(tmp_path)
+    out = _write(tmp_path, include_version_in_filename=version_in_filename)
+    assert Path(out) == clip
+    assert not (tmp_path / "s.clip").exists()
+    stem = "s_v002" if version_in_filename else "s"
+    assert (tmp_path / "s" / "versions" / "v002" / f"{stem}.0001.exr").exists()
+    for v in ("v001", "v002"):
+        assert _read(str(clip), version=v)[2] == 2
+
+
+def test_overwrite_with_version_in_filename_also_removes_old_dot_named_frames(tmp_path):
+    clip = _legacy_clip(tmp_path, stem="s.v001")
+    _write(tmp_path, version_name="v001", overwrite=True, include_version_in_filename=True)
+    names = sorted(p.name for p in (tmp_path / "s" / "versions" / "v001").glob("*.exr"))
+    assert names == ["s_v001.0001.exr", "s_v001.0002.exr"]
+    assert _read(str(clip), version="v001")[2] == 2

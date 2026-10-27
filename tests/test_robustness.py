@@ -390,7 +390,7 @@ def test_writer_file_format_mismatch_against_existing_clip_raises(tmp_path):
 
 def test_writer_corrupt_existing_clip_raises_rather_than_clobbering(tmp_path):
     OpenClipWriter().execute(IMAGE=torch.rand(1, 8, 8, 3), **_writer_kwargs(tmp_path))
-    clip = tmp_path / "s" / "s.clip"
+    clip = tmp_path / "s.clip"
     clip.write_text("<<<not xml")
     with pytest.raises(ValueError, match="not valid XML"):
         OpenClipWriter().execute(IMAGE=torch.rand(1, 8, 8, 3), **_writer_kwargs(tmp_path))
@@ -403,7 +403,7 @@ def test_writer_format_mismatch_leaves_no_new_frames_behind(tmp_path):
     with pytest.raises(ValueError, match="Format mismatch"):
         OpenClipWriter().execute(IMAGE=torch.rand(1, 32, 32, 3), **_writer_kwargs(tmp_path))
     assert sorted(p.name for p in tmp_path.rglob("*") if p.is_file()) == before
-    assert not (tmp_path / "s" / "versions" / "v002").exists()
+    assert not (tmp_path / "s" / "v002").exists()
 
 
 def test_write_multiple_frames_to_token_less_path_raises(tmp_path):

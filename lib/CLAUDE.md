@@ -93,19 +93,22 @@ All media paths inside the XML are relative to the `.clip` file's directory.
 
 ## Package Layouts — `package_layout.py`
 
-### Standard Flame layout
-Mirrors what Flame produces on export. Safe for direct library scan and import.
+### Standard Flame layout (changed 2026-10-27)
+The `.clip` sits in `<output_dir>` next to a same-named media folder; `include_version_in_filename` (`build(..., version_in_filename=)`) picks between two shapes.
 
 ```
-<output_dir>/
-  <clip_name>/
-    <clip_name>.clip              ← XML manifest
-    versions/
-      v001/
-        <clip_name>.0001.exr
-        <clip_name>.0002.exr
-        <clip_name>.v001.comfy.json   ← ComfyUI workflow sidecar (publish only)
+version_in_filename=False                 version_in_filename=True  ← Flame's own export layout
+<output_dir>/                             <output_dir>/
+  <clip_name>.clip                          <clip_name>.clip
+  <clip_name>/                              <clip_name>/
+    v001/                                     <clip_name>_v001.0001.exr
+      <clip_name>.0001.exr                    <clip_name>_v002.0001.exr
+      <clip_name>.v001.comfy.json             <clip_name>.v001.comfy.json   ← sidecar (publish only)
 ```
+
+The `True` shape matches every real Flame export checked on the share (2260, 5012 jobs: `55_OpenClips/s120.clip` beside `55_OpenClips/s120/s120_v001.[…].exr`), including the `_v001` underscore, which is why the toggle now writes `_` rather than the earlier `.v001` (in every layout, Flat included). Overwrite with the toggle on also deletes a version's older `<clip_name>.<version>.*` frames.
+
+**Legacy layout, read and append only.** Before 2026-10-27 Standard Flame wrote `<output_dir>/<clip_name>/<clip_name>.clip` + `versions/<version>/`. `_is_legacy_standard()` detects that (`<clip_name>/<clip_name>.clip` exists and `<output_dir>/<clip_name>.clip` doesn't) and `build()` keeps returning legacy paths for it, so the Writer appends into the old clip instead of starting a new one beside it. Reading needs nothing special — media paths come from the XML. Explicit user decision: keep this compatibility for now and remove it later.
 
 ### Flat layout
 Simpler structure; suitable for drag-and-drop Flame import or stand-alone review.

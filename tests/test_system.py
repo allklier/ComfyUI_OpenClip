@@ -327,7 +327,7 @@ def test_write_standard_flame_layout(tmp_path):
     )
     clip_file = Path(clip_path)
     assert clip_file.exists()
-    media_dir = tmp_path / "myshot" / "versions" / "v001"
+    media_dir = tmp_path / "myshot" / "v001"
     assert (media_dir / "myshot.1001.exr").exists()
     assert (media_dir / "myshot.1004.exr").exists()
 
@@ -342,9 +342,9 @@ def test_write_include_version_in_filename(tmp_path):
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=False, include_version_in_filename=True,
     )
-    assert Path(clip_path).name == "myshot.clip"
-    media_dir = tmp_path / "myshot" / "versions" / "v001"
-    assert (media_dir / "myshot.v001.1001.exr").exists()
+    # Flame's own layout: <clip>.clip beside a <clip>/ folder holding every version's frames.
+    assert Path(clip_path) == tmp_path / "myshot.clip"
+    assert (tmp_path / "myshot" / "myshot_v001.1001.exr").exists()
 
 
 def test_write_flat_layout(tmp_path):
@@ -387,7 +387,7 @@ def test_write_publish_creates_sidecar(tmp_path):
         extra_pnginfo={"workflow": workflow},
     )
     # sidecar lives in the version media dir, not beside the .clip
-    sidecar = tmp_path / "myshot" / "versions" / "v001" / "myshot.v001.comfy.json"
+    sidecar = tmp_path / "myshot" / "v001" / "myshot.v001.comfy.json"
     assert sidecar.exists()
     saved = json.loads(sidecar.read_text())
     assert saved == workflow
@@ -399,7 +399,7 @@ def test_write_publish_creates_sidecar(tmp_path):
     ver_ud = root.find("versions/version[@uid='v001']/userData")
     comfy_el = ver_ud.find("comfyWorkflow")
     assert comfy_el is not None
-    assert comfy_el.get("path") == "versions/v001/myshot.v001.comfy.json"
+    assert comfy_el.get("path") == "myshot/v001/myshot.v001.comfy.json"
 
 
 def test_write_no_publish_no_sidecar(tmp_path):
@@ -580,7 +580,7 @@ def test_write_overwrite_replaces_version_and_deletes_stale_frames(tmp_path):
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=False,
     )
-    media_dir = tmp_path / "mv" / "versions" / "v001"
+    media_dir = tmp_path / "mv" / "v001"
     assert len(list(media_dir.glob("*.exr"))) == 6
 
     (clip_path,) = writer.execute(
@@ -654,7 +654,7 @@ def _clip_with_three_versions(tmp_path: Path, clip_name: str = "mv3") -> Path:
             file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
             layout="Standard Flame", publish=False,
         )
-    return tmp_path / clip_name / f"{clip_name}.clip"
+    return tmp_path / f"{clip_name}.clip"
 
 
 def test_reader_resolves_current_to_actual_version_name(tmp_path):
@@ -757,7 +757,7 @@ def test_write_read_aov_separate_files_round_trip(tmp_path):
         IMAGE=image, aov_chain=chain,
         **_writer_kwargs(tmp_path, "aov_sep", aov_layout="Separate Files"),
     )
-    media_dir = tmp_path / "aov_sep" / "versions" / "v001"
+    media_dir = tmp_path / "aov_sep" / "v001"
     assert (media_dir / "aov_sep_AOV_normal.1001.exr").exists()
     assert (media_dir / "aov_sep_AOV_depth.1001.exr").exists()
 
