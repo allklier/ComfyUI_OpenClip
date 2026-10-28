@@ -493,7 +493,9 @@ def test_cst_unknown_pipe_space_raises_ocio_error():
 
 
 def test_cst_unreadable_config_path_raises():
-    with pytest.raises(ocio.Exception):
+    # OCIO 2.6 raises ExceptionMissingFile here (2.5 raised ocio.Exception); in
+    # both versions ExceptionMissingFile is not a subclass of ocio.Exception.
+    with pytest.raises((ocio.Exception, ocio.ExceptionMissingFile)):
         _cst(ocio_config="/no/such/config.ocio")
 
 
