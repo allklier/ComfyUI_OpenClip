@@ -132,7 +132,9 @@ The "– not run" lines stay as they are; the added line records what was done.
 | Tests and PR-mode security scan | ran green on the PR that added CI |
 | Release classification and notes | `.github/scripts/test_release_plan.py` (runs in `tests.yml`), including the repo's real tag list |
 | All workflows | `actionlint` 1.7.12 and `zizmor` 1.30.1 (`--offline`), the scanner's pinned versions. zizmor reports two low "self-repository" notes in `release.yml`; kept on purpose (comment in the file: the pinned actionlint rejects the suggested `$/` syntax) |
-| Dry run, tag push, publish, promote, weekly schedule | not run yet. Manual runs (dry run, promote, scan) and the schedule only work once the workflow file is on `master`, the default branch; a tag push uses the workflow at the tagged commit, and no tag was pushed while building this. First real use is the first release after merge |
+| Dry run, manual full scan | ran green on `master` after the merge (2026-10-28): the v1.1.1 dry run classified it as a patch (normal release) and printed the notes; the full scan found 0 high, 3 accepted risks, 2 low notes |
+| Tag push, tests + scan from the release, publish | v1.1.1 (2026-10-28): the release run passed tests and scan through the two-level call (`release.yml` → `security-scan.yml` → the scanner) and created the release with the multi-line notes intact |
+| Promote, weekly schedule | not run yet. The schedule first fires on a Monday at 05:17 UTC; promote is first used when a release is tested in Flame |
 
 Not decided by CI: whether GitHub moves the "Latest" badge when a
 pre-release is promoted (not checked).
