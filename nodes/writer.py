@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import glob
 import json
 import os
 from pathlib import Path
@@ -87,6 +88,7 @@ class OpenClipWriter:
         extra_pnginfo: Optional[dict] = None,
         prompt=None,
     ):
+        _check_name_component(version_name, "version_name")
         output_dir, clip_name = _resolve_destination(
             clip_path.strip(), clip_name.strip(), clip_filename.strip()
         )
@@ -221,7 +223,8 @@ def _delete_existing_frames(media_dir: Path, frame_stem: str, file_format: str) 
     Deletes before writing rather than just letting new frames land on top, so a shorter
     re-render doesn't leave stale extra frames from the old render behind.
     """
-    pattern = f"{frame_stem}.*.{file_format.lower()}"
+    # Escaped, so a clip or version name containing * ? [ ] can't match another clip's frames.
+    pattern = f"{glob.escape(frame_stem)}.*.{file_format.lower()}"
     deleted = 0
     for f in media_dir.glob(pattern):
         f.unlink()
@@ -256,6 +259,7 @@ def _resolve_destination(clip_path_in: str, clip_name_in: str, clip_filename: st
     if "$(clip_name)" in expanded:
         if not clip_name_in:
             raise ValueError("clip_name is required when clip_filename contains $(clip_name)")
+        _check_name_component(clip_name_in, "clip_name")
         expanded = expanded.replace("$(clip_name)", clip_name_in)
 
     # Collapse any .. segments without requiring the path to exist yet.
@@ -270,6 +274,20 @@ def _resolve_destination(clip_path_in: str, clip_name_in: str, clip_filename: st
 
     name = p.stem if p.suffix.lower() == ".clip" else p.name
     return str(p.parent), name
+
+
+def _check_name_component(value: str, what: str) -> None:
+    """Reject a clip_name/version_name that would leave its folder (a path separator, '.' or '..').
+
+    Either can be wired from a Reader, i.e. come from someone else's .clip <name>, so it must
+    not be able to redirect the write. Moving the destination on purpose is what clip_filename
+    is for ($(path)/../elsewhere/$(clip_name)).
+    """
+    if "/" in value or "\\" in value or value.strip() in (".", ".."):
+        raise ValueError(
+            f"[OpenClipWriter] {what} '{value}' must be a plain name: no '/', '\\', '.' or '..'. "
+            f"To write somewhere else, change clip_filename (e.g. $(path)/../other/$(clip_name))."
+        )
 
 
 def _normalize_to_folder(val: str) -> str:

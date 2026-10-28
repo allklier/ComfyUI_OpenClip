@@ -1,0 +1,48 @@
+# Promote a release after manual verification (policy C, docs/ci.md):
+# clears the pre-release flag and sets the notes' Status line to FULLY TESTED,
+# optionally adding one verification line. Run by hand:
+# Actions -> promote -> Run workflow.
+name: promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to promote, e.g. v1.2.0"
+        required: true
+        type: string
+      verification:
+        description: 'Optional line to add, e.g. "Acceptance (live ComfyUI): ✔ akflame5, 2026-11-02"'
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write # edit the release
+    steps:
+      - name: Check out (for the release script)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Promote
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          VERIFICATION: ${{ inputs.verification }}
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/promote"; mkdir -p "$D"
+          gh release view "$TAG" --repo "$REPO" --json body --jq .body > "$D/before.md"
+          python3 .github/scripts/release_plan.py promote --notes-in "$D/before.md" \
+            --notes-out "$D/after.md" --verification "$VERIFICATION"
+          gh release edit "$TAG" --repo "$REPO" --prerelease=false --notes-file "$D/after.md"
+          { echo "Promoted $TAG"; echo; echo '```diff'; diff "$D/before.md" "$D/after.md" || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

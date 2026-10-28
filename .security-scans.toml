@@ -1,0 +1,17 @@
+# Accepted risks for the security scans (github.com/allklier/security-scans).
+# Each entry needs a reason and an expiry date; an expired entry is reported again.
+
+[[accept]]
+fingerprint = "18b1847de7117ac2"
+rule = "python.lang.security.audit.dynamic-urllib-use-detected"
+path = "acceptance/run_acceptance.py"
+reason = "Developer-only acceptance script; the URL is the developer's own ComfyUI server given on the command line, never untrusted input"
+expires = 2027-04-30
+owner = "allklier"
+
+[[accept]]
+tool = "lockfile"
+rule = "missing-lockfile"
+reason = "No lockfiles by policy: a ComfyUI node shares ComfyUI's Python environment, so exact pins would conflict with ComfyUI and other nodes. Minimum versions in requirements.txt/pyproject.toml are kept above known CVEs instead"
+expires = 2027-10-28
+owner = "allklier"

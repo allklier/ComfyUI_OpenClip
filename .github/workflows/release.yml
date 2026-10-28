@@ -1,0 +1,134 @@
+# Release policy C (rules and how-to: docs/ci.md).
+#
+#   push of a tag vX.Y.Z  -> plan, then tests + security scan, then create the
+#                            GitHub release (patch = normal release,
+#                            minor/major/first = pre-release).
+#   workflow_dispatch     -> DRY RUN: plan only. Prints the classification and
+#                            the notes to the log and job summary; creates nothing.
+#
+# The ComfyUI registry publish (`comfy node publish`) stays manual.
+# Only the `publish` job can write (contents: write, to create the release).
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to plan, e.g. v1.1.1 (need not exist yet)"
+        required: true
+        type: string
+      tag-message:
+        description: "Only if the tag doesn't exist yet: the annotated tag message to preview with"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      title: ${{ steps.plan.outputs.title }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+      notes: ${{ steps.plan.outputs.notes }}
+    steps:
+      - name: Check out (for the release script)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Plan
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+          PREVIEW_MESSAGE: ${{ inputs.tag-message }}
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/release"; mkdir -p "$D"
+          gh api --paginate "repos/$REPO/git/matching-refs/tags/v" --jq '.[].ref | sub("^refs/tags/"; "")' > "$D/tags"
+
+          # Tag message and pyproject version come from the tag itself when it
+          # exists on GitHub; a dry run for a tag not pushed yet uses this
+          # checkout's pyproject.toml and the tag-message input.
+          if ref_json=$(gh api "repos/$REPO/git/ref/tags/$TAG" 2>/dev/null); then
+            ref_type=$(jq -r .object.type <<<"$ref_json"); ref_sha=$(jq -r .object.sha <<<"$ref_json")
+            if [ "$ref_type" = tag ]; then   # annotated tag: read its message
+              gh api "repos/$REPO/git/tags/$ref_sha" --jq .message > "$D/message"
+            else
+              : > "$D/message"               # lightweight tag: no message
+            fi
+            gh api -H "Accept: application/vnd.github.raw" "repos/$REPO/contents/pyproject.toml?ref=refs/tags/$TAG" > "$D/pyproject.toml"
+            head_ref="$TAG"
+          else
+            if [ "$EVENT" = push ]; then echo "::error::tag $TAG not found on GitHub"; exit 1; fi
+            printf '%s' "$PREVIEW_MESSAGE" > "$D/message"
+            cp pyproject.toml "$D/pyproject.toml"
+            head_ref="$GITHUB_SHA"
+          fi
+          version=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["project"]["version"])' "$D/pyproject.toml")
+
+          # Commit subjects since the previous vX.Y.Z tag: the changelog when
+          # the tag has no message.
+          prev=$(python3 .github/scripts/release_plan.py previous --tag "$TAG" --tags-file "$D/tags")
+          : > "$D/commits"
+          if [ -n "$prev" ]; then
+            gh api "repos/$REPO/compare/$prev...$head_ref" --jq '.commits[].commit.message | split("\n")[0]' > "$D/commits"
+          fi
+
+          if [ "$EVENT" = push ]; then ci_line="✔ $RUN_URL"; else ci_line="– not run (dry run)"; fi
+          python3 .github/scripts/release_plan.py plan --tag "$TAG" --version "$version" \
+            --tags-file "$D/tags" --message-file "$D/message" --commits-file "$D/commits" \
+            --ci-line "$ci_line" --repo-url "$REPO_URL" --notes-out "$D/notes.md" | tee "$D/plan.txt"
+          { echo '```'; cat "$D/plan.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  # `./` (not the newer `$/` self-repository syntax zizmor suggests): for a
+  # job-level reusable-workflow call GitHub takes `./` from the same commit as
+  # this workflow, no checkout involved, and the pinned actionlint 1.7.12
+  # rejects `$/`.
+  tests:
+    needs: plan
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/tests.yml
+
+  security-scan:
+    needs: plan
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/security-scan.yml
+
+  publish:
+    needs: [plan, tests, security-scan]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write # create the release
+    steps:
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          TITLE: ${{ needs.plan.outputs.title }}
+          PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+          NOTES: ${{ needs.plan.outputs.notes }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
+          args=(--repo "$REPO" --verify-tag --title "$TITLE" --notes-file "$RUNNER_TEMP/notes.md")
+          if [ "$PRERELEASE" = true ]; then args+=(--prerelease); fi
+          gh release create "$TAG" "${args[@]}"
+          echo "Created $([ "$PRERELEASE" = true ] && echo pre-release || echo release) $TAG" >> "$GITHUB_STEP_SUMMARY"

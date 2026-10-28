@@ -1,0 +1,35 @@
+# Security scan via the reusable workflow in allklier/security-scans
+# (https://github.com/allklier/security-scans, docs/adding-a-repo.md there).
+#   pull_request              -> "pr" mode: fails only on findings NEW in the PR at high or above
+#   schedule, workflow_dispatch -> "full" mode: whole tree + git history; fails only if a tool errors
+# Also callable (workflow_call) so release.yml can run it; a call from a tag
+# push runs in "full" mode. Accepted risks: .security-scans.toml. Docs: docs/ci.md.
+#
+# The scanner is pinned by full commit SHA, the same SHA in `uses:` and
+# `scanner-ref`. Updating the scanner = bumping both.
+#
+# No SARIF upload to code scanning (the scanner's optional upload-sarif.yml):
+# left out to keep this minimal; reports are kept as a workflow artifact and in
+# the job summary.
+name: security-scan
+
+on:
+  pull_request:
+  schedule:
+    - cron: "17 5 * * 1" # weekly, Monday 05:17 UTC: catches new CVEs in unchanged code
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    permissions:
+      contents: read
+    uses: allklier/security-scans/.github/workflows/scan.yml@2c11296060c3a66de3e04ff6459f1c7de3fa77e4 # main, 2026-10-28
+    with:
+      mode: ${{ github.event_name == 'pull_request' && 'pr' || 'full' }}
+      languages: python,javascript # same as repos.toml in security-scans
+      fail-on: high
+      scanner-ref: "2c11296060c3a66de3e04ff6459f1c7de3fa77e4"
