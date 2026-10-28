@@ -1,0 +1,62 @@
+# Unit tests (pytest) on every pull request and push. Also callable
+# (workflow_call) so release.yml can require a green test run before it
+# creates a release. No ComfyUI is installed: the tests call the node classes
+# directly (see tests/CLAUDE.md). Docs: docs/ci.md.
+#
+# Actions are pinned by full commit SHA; the tag is in the comment
+# (checked with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`, 2026-10-28).
+name: tests
+
+on:
+  pull_request:
+  push:
+    # Branch pushes only: a `branches` filter alone makes tag pushes not
+    # trigger this workflow (release.yml calls it for tags instead).
+    branches: ["**"]
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: pytest (Python ${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 = the floor in pyproject.toml (requires-python >=3.10);
+        # 3.13 = the newest Python ComfyUI recommends. The local dev env
+        # (3.12) sits between the two.
+        python: ["3.10", "3.13"]
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The tests import the repo as the package `ComfyUI_OpenClip`, so the
+          # checkout folder must have that name (pytest puts its parent on sys.path).
+          path: ComfyUI_OpenClip
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install dependencies
+        # torch comes from PyTorch's CPU-only index (about 200 MB instead of
+        # several GB of CUDA wheels); everything else from PyPI.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r ComfyUI_OpenClip/requirements.txt numpy pytest
+          python -m pip list
+
+      - name: Run tests
+        working-directory: ComfyUI_OpenClip
+        run: python -m pytest -q -ra
+
+      - name: Test the release script
+        working-directory: ComfyUI_OpenClip
+        run: python -m pytest -q -ra .github/scripts

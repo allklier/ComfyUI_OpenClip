@@ -14,3 +14,6 @@ EXR_REQUIREMENTS.md
 
 # Security-scan accepted risks — not needed to run the nodes
 .security-scans.toml
+
+# CI workflows and release tooling — not needed to run the nodes
+.github/
