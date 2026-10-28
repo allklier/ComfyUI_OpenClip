@@ -30,6 +30,6 @@ jobs:
     uses: allklier/security-scans/.github/workflows/scan.yml@2c11296060c3a66de3e04ff6459f1c7de3fa77e4 # main, 2026-10-28
     with:
       mode: ${{ github.event_name == 'pull_request' && 'pr' || 'full' }}
-      languages: python # same as repos.toml in security-scans
+      languages: python,javascript # same as repos.toml in security-scans
       fail-on: high
       scanner-ref: "2c11296060c3a66de3e04ff6459f1c7de3fa77e4"
