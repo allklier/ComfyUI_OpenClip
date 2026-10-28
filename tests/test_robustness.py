@@ -208,26 +208,29 @@ def test_named_part_zero_filled_at_the_frames_own_size_when_frame_lacks_it(tmp_p
     ("not_xml", "hello, I am not xml"),
     ("binary", b"\x00\xff\x00"),
 ])
-def test_unparseable_clip_raises_xml_syntax_error(tmp_path, label, text):
+def test_unparseable_clip_raises_value_error_naming_the_file(tmp_path, label, text):
+    # A ValueError naming the file (chained from lxml's XMLSyntaxError), not a raw lxml traceback.
     p = tmp_path / "bad.clip"
     p.write_bytes(text if isinstance(text, bytes) else text.encode())
-    with pytest.raises(etree.XMLSyntaxError):
+    with pytest.raises(ValueError, match=r"bad\.clip is not valid XML"):
         openclip_xml.parse(str(p))
-    with pytest.raises(etree.XMLSyntaxError):
+    with pytest.raises(ValueError, match=r"bad\.clip is not valid XML"):
         openclip_xml.read_format(str(p))
 
 
-def test_truncated_clip_raises_xml_syntax_error(tmp_path, v8_single_clip):
+def test_truncated_clip_raises_value_error(tmp_path, v8_single_clip):
     p = tmp_path / "trunc.clip"
     text = v8_single_clip.read_text()
     p.write_text(text[: len(text) // 2])
-    with pytest.raises(etree.XMLSyntaxError):
+    with pytest.raises(ValueError, match="not valid XML") as exc:
         openclip_xml.parse(str(p))
+    assert isinstance(exc.value.__cause__, etree.XMLSyntaxError)
 
 
 @pytest.mark.parametrize("xml, match", [
-    ("<foo/>", "Missing <name>"),
-    ("<clip version='8'><tracks/></clip>", "Missing <name>"),
+    # No root <name> is fine (falls back to the file stem), so these now fail one level deeper.
+    ("<foo/>", "Missing <tracks>"),
+    ("<clip version='8'><tracks/></clip>", "Missing <track>"),
     ("<clip version='8'><name>x</name></clip>", "Missing <tracks>"),
     ("<clip version='8'><name>x</name><tracks/></clip>", "Missing <track>"),
     ("<clip version='8'><name>x</name><tracks><track/></tracks></clip>", "Missing <feeds>"),
@@ -243,11 +246,13 @@ def test_structurally_invalid_clip_raises_value_error(tmp_path, xml, match):
         openclip_xml.parse(str(p))
 
 
-def test_read_format_without_storage_format_raises(tmp_path):
+def test_read_format_without_storage_format_returns_unknowns(tmp_path):
+    # Autodesk's example clips often have no <storageFormat>; unknown fields stay 0/"" so the
+    # writer's format-mismatch check skips them rather than the read failing.
     p = tmp_path / "nofmt.clip"
     p.write_text("<clip version='8'><name>x</name></clip>")
-    with pytest.raises(ValueError, match="storageFormat"):
-        openclip_xml.read_format(str(p))
+    fmt = openclip_xml.read_format(str(p))
+    assert (fmt.width, fmt.height, fmt.file_format, fmt.fps) == (0, 0, "", "24")
 
 
 def test_clip_with_no_feeds_has_no_versions_and_current_cannot_resolve(tmp_path):
@@ -385,9 +390,9 @@ def test_writer_file_format_mismatch_against_existing_clip_raises(tmp_path):
 
 def test_writer_corrupt_existing_clip_raises_rather_than_clobbering(tmp_path):
     OpenClipWriter().execute(IMAGE=torch.rand(1, 8, 8, 3), **_writer_kwargs(tmp_path))
-    clip = tmp_path / "s" / "s.clip"
+    clip = tmp_path / "s.clip"
     clip.write_text("<<<not xml")
-    with pytest.raises(etree.XMLSyntaxError):
+    with pytest.raises(ValueError, match="not valid XML"):
         OpenClipWriter().execute(IMAGE=torch.rand(1, 8, 8, 3), **_writer_kwargs(tmp_path))
     assert clip.read_text() == "<<<not xml"
 
@@ -398,7 +403,7 @@ def test_writer_format_mismatch_leaves_no_new_frames_behind(tmp_path):
     with pytest.raises(ValueError, match="Format mismatch"):
         OpenClipWriter().execute(IMAGE=torch.rand(1, 32, 32, 3), **_writer_kwargs(tmp_path))
     assert sorted(p.name for p in tmp_path.rglob("*") if p.is_file()) == before
-    assert not (tmp_path / "s" / "versions" / "v002").exists()
+    assert not (tmp_path / "s" / "v002").exists()
 
 
 def test_write_multiple_frames_to_token_less_path_raises(tmp_path):

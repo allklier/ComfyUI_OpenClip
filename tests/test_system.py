@@ -67,7 +67,7 @@ def test_read_v8_clip_end_to_end(tmp_path):
     assert frame_count == 4
     assert width == 64
     assert height == 64
-    assert format_version == "8"
+    assert format_version == "6"  # generate()'s default schema version (issue #4)
     assert fps == 24.0  # _clip_with_seq() calls generate() with fmt=None, defaulting to ClipFormat().fps
 
 
@@ -323,11 +323,11 @@ def test_write_standard_flame_layout(tmp_path):
         clip_filename="$(path)/$(clip_name)",
         version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
-        layout="Standard Flame", publish=False,
+        layout="Standard Flame", publish=False, include_version_in_filename=False,
     )
     clip_file = Path(clip_path)
     assert clip_file.exists()
-    media_dir = tmp_path / "myshot" / "versions" / "v001"
+    media_dir = tmp_path / "myshot" / "v001"
     assert (media_dir / "myshot.1001.exr").exists()
     assert (media_dir / "myshot.1004.exr").exists()
 
@@ -342,9 +342,9 @@ def test_write_include_version_in_filename(tmp_path):
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
         layout="Standard Flame", publish=False, include_version_in_filename=True,
     )
-    assert Path(clip_path).name == "myshot.clip"
-    media_dir = tmp_path / "myshot" / "versions" / "v001"
-    assert (media_dir / "myshot.v001.1001.exr").exists()
+    # Flame's own layout: <clip>.clip beside a <clip>/ folder holding every version's frames.
+    assert Path(clip_path) == tmp_path / "myshot.clip"
+    assert (tmp_path / "myshot" / "myshot_v001.1001.exr").exists()
 
 
 def test_write_flat_layout(tmp_path):
@@ -355,7 +355,7 @@ def test_write_flat_layout(tmp_path):
         clip_filename="$(path)/$(clip_name)",
         version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
-        layout="Flat", publish=False,
+        layout="Flat", publish=False, include_version_in_filename=False,
     )
     assert Path(clip_path).exists()
     assert (tmp_path / "myshot.1001.exr").exists()
@@ -369,7 +369,7 @@ def test_write_png_sequence(tmp_path):
         clip_filename="$(path)/$(clip_name)",
         version_name="v001", fps=24.0, start_frame=1, frame_padding=4,
         file_format="PNG", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
-        layout="Flat", publish=False,
+        layout="Flat", publish=False, include_version_in_filename=False,
     )
     assert (tmp_path / "myshot.0001.png").exists()
 
@@ -383,11 +383,11 @@ def test_write_publish_creates_sidecar(tmp_path):
         clip_filename="$(path)/$(clip_name)",
         version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
-        layout="Standard Flame", publish=True,
+        layout="Standard Flame", publish=True, include_version_in_filename=False,
         extra_pnginfo={"workflow": workflow},
     )
     # sidecar lives in the version media dir, not beside the .clip
-    sidecar = tmp_path / "myshot" / "versions" / "v001" / "myshot.v001.comfy.json"
+    sidecar = tmp_path / "myshot" / "v001" / "myshot.v001.comfy.json"
     assert sidecar.exists()
     saved = json.loads(sidecar.read_text())
     assert saved == workflow
@@ -399,7 +399,7 @@ def test_write_publish_creates_sidecar(tmp_path):
     ver_ud = root.find("versions/version[@uid='v001']/userData")
     comfy_el = ver_ud.find("comfyWorkflow")
     assert comfy_el is not None
-    assert comfy_el.get("path") == "versions/v001/myshot.v001.comfy.json"
+    assert comfy_el.get("path") == "myshot/v001/myshot.v001.comfy.json"
 
 
 def test_write_no_publish_no_sidecar(tmp_path):
@@ -578,9 +578,9 @@ def test_write_overwrite_replaces_version_and_deletes_stale_frames(tmp_path):
         clip_filename="$(path)/$(clip_name)",
         version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
-        layout="Standard Flame", publish=False,
+        layout="Standard Flame", publish=False, include_version_in_filename=False,
     )
-    media_dir = tmp_path / "mv" / "versions" / "v001"
+    media_dir = tmp_path / "mv" / "v001"
     assert len(list(media_dir.glob("*.exr"))) == 6
 
     (clip_path,) = writer.execute(
@@ -588,7 +588,7 @@ def test_write_overwrite_replaces_version_and_deletes_stale_frames(tmp_path):
         clip_filename="$(path)/$(clip_name)",
         version_name="v001", fps=24.0, start_frame=1001, frame_padding=4,
         file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
-        layout="Standard Flame", publish=False, overwrite=True,
+        layout="Standard Flame", publish=False, overwrite=True, include_version_in_filename=False,
     )
 
     # Stale frames 1004-1006 from the first (longer) render must be gone.
@@ -654,7 +654,7 @@ def _clip_with_three_versions(tmp_path: Path, clip_name: str = "mv3") -> Path:
             file_format="EXR", exr_bit_depth="half (16-bit)", exr_compression="ZIP",
             layout="Standard Flame", publish=False,
         )
-    return tmp_path / clip_name / f"{clip_name}.clip"
+    return tmp_path / f"{clip_name}.clip"
 
 
 def test_reader_resolves_current_to_actual_version_name(tmp_path):
@@ -755,9 +755,9 @@ def test_write_read_aov_separate_files_round_trip(tmp_path):
     chain = _chain(("normal", normal, None), ("depth", None, depth))
     (clip_path,) = OpenClipWriter().execute(
         IMAGE=image, aov_chain=chain,
-        **_writer_kwargs(tmp_path, "aov_sep", aov_layout="Separate Files"),
+        **_writer_kwargs(tmp_path, "aov_sep", aov_layout="Separate Files", include_version_in_filename=False),
     )
-    media_dir = tmp_path / "aov_sep" / "versions" / "v001"
+    media_dir = tmp_path / "aov_sep" / "v001"
     assert (media_dir / "aov_sep_AOV_normal.1001.exr").exists()
     assert (media_dir / "aov_sep_AOV_depth.1001.exr").exists()
 
@@ -861,3 +861,67 @@ def test_colour_space_empty_when_not_carried(tmp_path):
     )
     out = _reader_result(clip_path)
     assert out["colour_space"] == ""
+
+
+# --- Autodesk's published Open Clip examples (issue #4) ---
+#
+# tests/fixtures/autodesk_examples/ is gitignored (Autodesk's files, not ours to redistribute), so
+# these skip cleanly where it is absent. Media paths inside are relative to each .clip.
+
+AUTODESK_DIR = Path(__file__).parent / "fixtures" / "autodesk_examples"
+
+_PATTERN = "pattern-based clips .* are not supported"
+_MOVIE = r"OpenClip_v001\.mov: movie containers are not supported"
+
+# file -> (frame_count, start_frame, version_name, media file stem) or an error regex
+AUTODESK_EXPECTED = {
+    "Broken_Sequence.clip": _PATTERN,
+    "Colour_Management.clip": _MOVIE,
+    "Metadata_Edits.clip": r"Metadata_Edits\.clip is not valid XML",
+    "MultiChannel.clip": (11, 86400, "v0", "Beauty"),          # first video track
+    "One_Track.clip": _MOVIE,
+    "One_Track_Multiple_Spans.clip": (4, 86400, "v0", "OpenClip_v001"),  # spans[0] only
+    "One_Track_Two_Versions.clip": (11, 86400, "version1", "OpenClip_v001"),
+    "Pattern_Clip.clip": _PATTERN,
+    "Pattern_MultiFormat.clip": _PATTERN,
+    "Stereo_Clip.clip": (11, 86400, "v0", "OpenClip_Left"),     # left eye
+    "Timing_Versions.clip": (5, 86404, "OpenClip_v003", "OpenClip_v003"),
+    "Two_Tracks_AV.clip": (11, 86400, "v0", "OpenClip_v001"),  # video track, audio ignored
+}
+
+
+def test_autodesk_expectations_cover_every_example():
+    if not AUTODESK_DIR.is_dir():
+        pytest.skip("tests/fixtures/autodesk_examples/ not present (gitignored)")
+    assert sorted(p.name for p in AUTODESK_DIR.glob("*.clip")) == sorted(AUTODESK_EXPECTED)
+
+
+@pytest.mark.parametrize("name", sorted(AUTODESK_EXPECTED))
+def test_autodesk_example(name):
+    clip = AUTODESK_DIR / name
+    if not clip.exists():
+        pytest.skip("tests/fixtures/autodesk_examples/ not present (gitignored)")
+    expected = AUTODESK_EXPECTED[name]
+    kw = dict(clip_path=str(clip), version="current", start_frame=-1, end_frame=-1, path_from="", path_to="")
+    if isinstance(expected, str):
+        with pytest.raises(ValueError, match=expected):
+            OpenClipReader().execute(**kw)
+        return
+    n, start, version_name, stem = expected
+    r = OpenClipReader().execute(**kw)["result"]
+    images, frame_count, width, height = r[0], r[2], r[3], r[4]
+    assert (frame_count, width, height) == (n, 1920, 1080)
+    assert images.shape == (n, 1080, 1920, 3)
+    assert (r[5], r[6], r[7]) == ("9", version_name, start)
+    assert r[9] == clip.stem  # no root <name> in any of these -> file stem
+    assert Path(r[11]["abs_pattern"]).name.startswith(stem + ".")
+    assert r[13] == 24.0  # no <editRate> -> default
+
+
+def test_autodesk_movie_clips_still_parse():
+    clip = AUTODESK_DIR / "One_Track.clip"
+    if not clip.exists():
+        pytest.skip("tests/fixtures/autodesk_examples/ not present (gitignored)")
+    parsed = openclip_xml.parse(str(clip))
+    assert parsed.current_version == "v0"
+    assert parsed.versions["v0"].spans[0].path == "Media/MOV/OpenClip_v001.mov"

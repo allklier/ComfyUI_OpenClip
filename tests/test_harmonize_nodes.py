@@ -129,8 +129,8 @@ def test_aov_survives_half_precision_within_tolerance_and_does_not_clamp(tmp_pat
 def test_aov_names_with_awkward_characters_in_separate_files_layout(tmp_path):
     matte = torch.rand(2, 16, 16)
     chain = OpenClipAOVWriter().execute(name="Z depth/main", matte=matte)[0]
-    out = _write_with_chain(tmp_path, chain, aov_layout="Separate Files")
-    siblings = sorted(p.name for p in (tmp_path / "s" / "versions" / "v001").glob("*.exr"))
+    out = _write_with_chain(tmp_path, chain, aov_layout="Separate Files", include_version_in_filename=False)
+    siblings = sorted(p.name for p in (tmp_path / "s" / "v001").glob("*.exr"))
     assert any("AOV_Z_depth_main" in n for n in siblings)  # sanitized for the filesystem
     # the sibling file carries the *original* name as its part name, which the probe recovers
     assert out[15] == "Z depth/main"

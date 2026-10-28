@@ -6,6 +6,26 @@ import torch
 OUTPUT_COLOUR_SPACE = "Rec.1886 Rec.709 - Display"
 OUTPUT_VIEW = "ACES 2.0 - SDR 100 nits (Rec.709)"
 
+# Pre-2026 Flame (SynColor) names for the OCIO names this project uses as defaults and
+# dropdown entries. Used only when a name isn't in the loaded config, so Autodesk's
+# syncolor-emulation configs (flame_configs' sibling legacy_configs/, shipped with Flame
+# 2026+) work unchanged. Each pair is the 2026+ ACES 2.0 config's own alias and gives the
+# same pixels to ACEScg in both configs (checked 2026-10-28; V-Gamut within 4e-4, the rest
+# within 3e-7). Linear S-Gamut3.Cine has no scene-linear counterpart in those configs.
+LEGACY_NAMES = {
+    "Rec.1886 Rec.709 - Display": "Rec.709 video",
+    "Linear ARRI Wide Gamut 3": "scene-linear Alexa WideGamut",
+    "Linear ARRI Wide Gamut 4": "scene-linear ARRI Wide Gamut 4",
+    "Linear REDWideGamutRGB": "Scene-linear / REDWideGamutRGB",
+    "Linear S-Gamut3": "scene-linear SGamut3",
+    "Linear V-Gamut": "scene-linear VGamut",
+    "Linear BMD WideGamut Gen5": "scene-linear BMD WideGamut Gen5",
+    "Linear DaVinci WideGamut": "scene-linear DaVinci WideGamut",
+    "CanonLog3 CinemaGamut D55": "CanonLog3 / CinemaGamut (D55)",
+    "sRGB Encoded Rec.709 (sRGB)": "sRGB",
+    "Gamma 2.4 Encoded Rec.709": "gamma 2.4 / Rec.709",
+}
+
 
 def apply_colour_transform(
     images: torch.Tensor,
@@ -45,9 +65,15 @@ def apply_colour_transform(
         ) from exc
 
     config = ocio.Config.CreateFromFile(config_path)
+    display = _resolve_name(config, output_space, display=True)
+    if view not in config.getViews(display):
+        raise ValueError(
+            f"View '{view}' not found for display '{display}' in {config_path}. "
+            f"Available: {list(config.getViews(display))}"
+        )
     transform = ocio.DisplayViewTransform()
-    transform.setSrc(input_space)
-    transform.setDisplay(output_space)
+    transform.setSrc(_resolve_name(config, input_space))
+    transform.setDisplay(display)
     transform.setView(view)
     direction = ocio.TRANSFORM_DIR_INVERSE if inverse else ocio.TRANSFORM_DIR_FORWARD
     processor = config.getProcessor(transform, direction)
@@ -93,8 +119,18 @@ def apply_colourspace_transform(
         ) from exc
 
     config = ocio.Config.CreateFromFile(config_path)
-    processor = config.getProcessor(input_space, output_space)
+    processor = config.getProcessor(_resolve_name(config, input_space), _resolve_name(config, output_space))
     return _apply_processor(images, processor)
+
+
+def _resolve_name(config, name: str, display: bool = False) -> str:
+    """name if the config knows it, else its pre-2026 Flame name if the config knows that,
+    else name unchanged (OCIO then reports it as missing)."""
+    def known(n: str) -> bool:
+        return n in config.getDisplays() if display else config.getColorSpace(n) is not None
+
+    legacy = LEGACY_NAMES.get(name)
+    return legacy if not known(name) and legacy and known(legacy) else name
 
 
 def _apply_processor(images: torch.Tensor, processor) -> torch.Tensor:

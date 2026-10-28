@@ -28,3 +28,6 @@ htmlcov/
 # Project-specific
 samples/
 node.zip
+testclips/
+tests/fixtures/autodesk_examples/
+.agent-status/

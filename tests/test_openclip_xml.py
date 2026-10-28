@@ -162,12 +162,19 @@ def _make_clip(n_versions: int = 1) -> tuple[str, dict, str]:
     return "my_clip", versions, "v001"
 
 
-def test_generate_v8_produces_valid_xml():
+def test_generate_produces_valid_xml_defaulting_to_schema_6():
+    # Default is 6, not 8: Flame 2024 rejects version="8" clips (issue #4).
     clip_name, versions, current = _make_clip()
     xml_bytes = openclip_xml.generate(clip_name, versions, current)
     root = etree.fromstring(xml_bytes)
-    assert root.get("version") == "8"
+    assert root.get("version") == "6"
     assert root.find("name").text == "my_clip"
+
+
+def test_generate_writes_explicit_schema_version():
+    clip_name, versions, current = _make_clip()
+    root = etree.fromstring(openclip_xml.generate(clip_name, versions, current, schema_version="8"))
+    assert root.get("version") == "8"
 
 
 def test_generate_round_trips_through_parse(tmp_path):
@@ -176,7 +183,7 @@ def test_generate_round_trips_through_parse(tmp_path):
     clip_file = tmp_path / "my_clip.clip"
     clip_file.write_bytes(xml_bytes)
     parsed = openclip_xml.parse(str(clip_file))
-    assert parsed.schema_version == "8"
+    assert parsed.schema_version == "6"
     assert parsed.clip_name == "my_clip"
     assert parsed.current_version == "v001"
     span = parsed.versions["v001"].spans[0]
@@ -321,8 +328,75 @@ def test_generate_version_number_in_userData():
 
 def test_round_trip_preserves_schema_version(tmp_path):
     clip_name, versions, current = _make_clip()
-    xml_bytes = openclip_xml.generate(clip_name, versions, current)
+    xml_bytes = openclip_xml.generate(clip_name, versions, current, schema_version="8")
     clip_file = tmp_path / "clip.clip"
     clip_file.write_bytes(xml_bytes)
     parsed = openclip_xml.parse(str(clip_file))
     assert parsed.schema_version == "8"
+
+
+# --- Autodesk-example shapes, inline so they run without the gitignored example files (issue #4) ---
+
+_FEED = "<feed vuid='{v}'><spans><span><path encoding='pattern'>{v}.[0001-0002].exr</path></span></spans></feed>"
+
+
+def _write_clip(tmp_path, body: str, name="ex.clip") -> str:
+    p = tmp_path / name
+    p.write_text(f"<clip type='clip' version='9'>{body}</clip>")
+    return str(p)
+
+
+def test_parse_without_root_name_uses_file_stem(tmp_path):
+    clip = _write_clip(tmp_path, f"<tracks><track><feeds>{_FEED.format(v='a')}</feeds></track></tracks>", "My_Shot.clip")
+    assert openclip_xml.parse(clip).clip_name == "My_Shot"
+
+
+@pytest.mark.parametrize("versions_block, expected", [
+    ("<versions currentVersion='b'><version uid='a'/><version uid='b'/></versions>", "b"),
+    ("", "a"),
+])
+def test_current_version_falls_back_to_versions_block_then_first_feed(tmp_path, versions_block, expected):
+    feeds = _FEED.format(v="a") + _FEED.format(v="b")
+    clip = _write_clip(tmp_path, f"<tracks><track><feeds>{feeds}</feeds></track></tracks>{versions_block}")
+    parsed = openclip_xml.parse(clip)
+    assert parsed.current_version == expected
+    assert openclip_xml.resolve_version(parsed, "current").uid == expected
+
+
+def test_parse_reads_first_video_track_not_audio(tmp_path):
+    audio = "<track><trackType>audio</trackType><feeds><feed vuid='s'><spans><span><path>s.wav</path></span></spans></feed></feeds></track>"
+    video = f"<track><trackType>video</trackType><feeds>{_FEED.format(v='pic')}</feeds></track>"
+    clip = _write_clip(tmp_path, f"<tracks>{audio}{video}</tracks>")
+    assert list(openclip_xml.parse(clip).versions) == ["pic"]
+
+
+def test_parse_stereo_reads_left_eye(tmp_path):
+    span = ("<span><paths><path subFeedId='Left' encoding='pattern'>L.[0001-0003].exr</path>"
+            "<path subFeedId='Right' encoding='pattern'>R.[0001-0003].exr</path></paths></span>")
+    clip = _write_clip(tmp_path, f"<tracks><track><feeds><feed vuid='v0'><spans>{span}</spans></feed></feeds></track></tracks>")
+    s = openclip_xml.parse(clip).versions["v0"].spans[0]
+    assert (s.path, s.start_frame, s.duration) == ("L.%04d.exr", 1, 3)
+
+
+def test_pattern_based_clip_raises_clear_error(tmp_path):
+    clip = _write_clip(tmp_path, "<name>x</name><handler><options><ScanPattern>{name}.{frame}.exr</ScanPattern></options></handler>")
+    with pytest.raises(ValueError, match="pattern-based clips"):
+        openclip_xml.parse(clip)
+
+
+def test_malformed_xml_raises_value_error_naming_the_file(tmp_path):
+    p = tmp_path / "broken.clip"
+    p.write_text("<clip><add key='x'>y</addition></clip>")
+    with pytest.raises(ValueError, match=r"broken\.clip is not valid XML"):
+        openclip_xml.parse(str(p))
+
+
+def test_append_without_versions_block_lists_existing_feeds(tmp_path):
+    feeds = _FEED.format(v="a") + _FEED.format(v="b")
+    clip = _write_clip(tmp_path, f"<tracks><track><feeds>{feeds}</feeds></track></tracks>")
+    new = openclip_xml.ClipVersion(uid="c", name="c", spans=[openclip_xml.ClipSpan(path="c.%04d.exr", start_frame=1, duration=2)])
+    root = etree.fromstring(openclip_xml.append_version(clip, new, openclip_xml.ClipFormat()))
+    vers = root.find("versions")
+    assert [v.get("uid") for v in vers.findall("version")] == ["a", "b", "c"]
+    assert vers.get("currentVersion") == "c"
+    assert root.find("versions/version[@uid='c']/userData/versionNumber").text == "3"

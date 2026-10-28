@@ -1,0 +1,60 @@
+ocio_profile_version: 2
+
+environment:
+  {}
+search_path: ""
+strictparsing: true
+luma: [0.2126, 0.7152, 0.0722]
+description: Minimal config using pre-2026 Flame (SynColor) names, for ComfyOpenClip tests
+
+roles:
+  default: ACEScg
+  scene_linear: ACEScg
+
+file_rules:
+  - !<Rule> {name: Default, colorspace: default}
+
+displays:
+  Rec.709 video:
+    - !<View> {name: ACES 1.1 SDR-video (Rec.709 limited), view_transform: ACES 1.1 SDR-video (Rec.709 limited), display_colorspace: Rec.709 video}
+    - !<View> {name: Raw, colorspace: ACEScg}
+
+active_displays: [Rec.709 video]
+active_views: [ACES 1.1 SDR-video (Rec.709 limited), Raw]
+
+view_transforms:
+  - !<ViewTransform>
+    name: ACES 1.1 SDR-video (Rec.709 limited)
+    description: Test stand-in view transform - halves values to simulate tone-mapping
+    from_scene_reference: !<MatrixTransform> {matrix: [0.5, 0, 0, 0, 0, 0.5, 0, 0, 0, 0, 0.5, 0, 0, 0, 0, 1]}
+
+display_colorspaces:
+  - !<ColorSpace>
+    name: Rec.709 video
+    family: ""
+    equalitygroup: ""
+    bitdepth: unknown
+    description: Identity display encoding (test stand-in)
+    isdata: false
+    allocation: uniform
+    from_display_reference: !<MatrixTransform> {}
+
+colorspaces:
+  - !<ColorSpace>
+    name: ACEScg
+    family: ""
+    equalitygroup: ""
+    bitdepth: unknown
+    description: Scene-linear reference
+    isdata: false
+    allocation: uniform
+
+  - !<ColorSpace>
+    name: scene-linear Alexa WideGamut
+    family: ""
+    equalitygroup: ""
+    bitdepth: unknown
+    description: Stand-in where 1 unit = 2 units in scene reference
+    isdata: false
+    allocation: uniform
+    to_scene_reference: !<MatrixTransform> {matrix: [2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1]}

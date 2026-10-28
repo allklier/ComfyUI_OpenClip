@@ -209,3 +209,35 @@ def test_node_inverse_direction():
                                  input_colour_space="linear", view=OUTPUT_VIEW,
                                  direction="inverse")
     assert torch.allclose(out_image, torch.full_like(out_image, 0.5), atol=1e-5)
+
+
+# --- pre-2026 Flame (SynColor-emulation) configs: legacy names (2026-10-28) ---
+
+LEGACY_CONFIG = str(Path(__file__).parent / "fixtures" / "test_ocio_legacy.ocio")
+
+
+def test_default_display_falls_back_to_its_legacy_name():
+    # The legacy config has no "Rec.1886 Rec.709 - Display", only "Rec.709 video".
+    images = torch.full((1, 4, 4, 3), 0.5)
+    result = apply_colour_transform(images, LEGACY_CONFIG, "ACEScg", view="ACES 1.1 SDR-video (Rec.709 limited)")
+    assert torch.allclose(result, torch.full_like(result, 0.25), atol=1e-5)
+
+
+def test_legacy_input_name_resolves_and_inverse_works():
+    images = torch.full((1, 2, 2, 3), 0.25)
+    out = apply_colour_transform(images, LEGACY_CONFIG, "Linear ARRI Wide Gamut 3", view="Raw")
+    assert torch.allclose(out, torch.full_like(out, 0.5), atol=1e-5)
+    back = apply_colour_transform(out, LEGACY_CONFIG, "Linear ARRI Wide Gamut 3", view="Raw", inverse=True)
+    assert torch.allclose(back, images, atol=1e-5)
+
+
+def test_missing_view_lists_the_available_ones():
+    # The default ACES 2.0 view doesn't exist in a legacy config; say which views do.
+    with pytest.raises(ValueError, match=r"ACES 2\.0 .*not found.*ACES 1\.1 SDR-video"):
+        apply_colour_transform(torch.zeros(1, 2, 2, 3), LEGACY_CONFIG, "ACEScg")
+
+
+def test_new_name_wins_when_the_config_has_it():
+    # The 2026+ style fixture is unaffected by the fallback.
+    result = apply_colour_transform(torch.full((1, 2, 2, 3), 0.5), FIXTURE_CONFIG, "linear")
+    assert torch.allclose(result, torch.full_like(result, 0.25), atol=1e-5)

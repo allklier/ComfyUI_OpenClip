@@ -28,7 +28,8 @@ Business logic lives here. The three modules map to the three responsibilities: 
 IMAGE + MASK tensors
   → image_io.write_sequence() via OIIO → frame files on disk
   → package_layout.build() → directory tree
-  → openclip_xml.generate() → .clip XML written to disk
+  → openclip_xml.generate() (new clip, schema from format_version, default 6)
+    or openclip_xml.append_version() (existing clip, edited in place) → .clip XML written to disk
   → .comfy.json sidecar written + XML reference added (if publish enabled)
 ```
 
@@ -84,23 +85,30 @@ A real Flame `<span><path>` can also carry `encoding="file"` for a single static
 
 All media paths inside the XML are relative to the `.clip` file's directory.
 
+**Track choice, shared by `parse()`, `read_format()` and `append_version()` (`_select_track`, 2026-10-27):** the first track whose `<trackType>` is `video`, else the first track. Autodesk's examples include audio tracks and one-track-per-layer clips (Beauty/Matte/Position/UV); other tracks are ignored and never rewritten. A clip with a `<handler>` and no `<tracks>` (ScanPattern clips) raises "pattern-based clips … not supported". Stereo spans (`<paths><path subFeedId="Left">…`) read the first path.
+
+**Writing never regenerates an existing clip (2026-10-27, issue #4).** `append_version()` loads the file, adds or replaces one `<feed vuid=…>` and one top-level `<version uid=…>`, and sets `currentVersion` on both; everything else — the root schema version, Flame's track names, userData, other tracks, unknown elements — is left as it was. `_build_feed()`/`_build_version()` are shared with `generate()`, which is now used only for brand-new clips.
+
 ---
 
 ## Package Layouts — `package_layout.py`
 
-### Standard Flame layout
-Mirrors what Flame produces on export. Safe for direct library scan and import.
+### Standard Flame layout (changed 2026-10-27)
+The `.clip` sits in `<output_dir>` next to a same-named media folder; `include_version_in_filename` (`build(..., version_in_filename=)`) picks between two shapes.
 
 ```
-<output_dir>/
-  <clip_name>/
-    <clip_name>.clip              ← XML manifest
-    versions/
-      v001/
-        <clip_name>.0001.exr
-        <clip_name>.0002.exr
-        <clip_name>.v001.comfy.json   ← ComfyUI workflow sidecar (publish only)
+version_in_filename=False                 version_in_filename=True  ← Flame's own export layout
+<output_dir>/                             <output_dir>/
+  <clip_name>.clip                          <clip_name>.clip
+  <clip_name>/                              <clip_name>/
+    v001/                                     <clip_name>_v001.0001.exr
+      <clip_name>.0001.exr                    <clip_name>_v002.0001.exr
+      <clip_name>.v001.comfy.json             <clip_name>.v001.comfy.json   ← sidecar (publish only)
 ```
+
+The `True` shape matches every real Flame export checked on the share (2260, 5012 jobs: `55_OpenClips/s120.clip` beside `55_OpenClips/s120/s120_v001.[…].exr`), including the `_v001` underscore, which is why the toggle now writes `_` rather than the earlier `.v001` (in every layout, Flat included). Overwrite with the toggle on also deletes a version's older `<clip_name>.<version>.*` frames.
+
+**Legacy layout, read and append only.** Before 2026-10-27 Standard Flame wrote `<output_dir>/<clip_name>/<clip_name>.clip` + `versions/<version>/`. `_is_legacy_standard()` detects that (`<clip_name>/<clip_name>.clip` exists and `<output_dir>/<clip_name>.clip` doesn't) and `build()` keeps returning legacy paths for it, so the Writer appends into the old clip instead of starting a new one beside it. Reading needs nothing special — media paths come from the XML. Explicit user decision: keep this compatibility for now and remove it later.
 
 ### Flat layout
 Simpler structure; suitable for drag-and-drop Flame import or stand-alone review.
@@ -240,5 +248,7 @@ The path is stored in `ClipVersion.publish_path` (relative to the `.clip` file's
 This distinction matters specifically because `output_space` (default `"Rec.1886 Rec.709 - Display"`) is a **display-referred** colour space. In an OCIO v2 / ACES config, a display colour space's own `colorspaces:`/`display_colorspaces:` definition is *encoding only* (EOTF + primaries) — it has no tone-mapping or gamut compression baked in. The actual ACES Output Transform (what Flame calls a "view transform": filmic highlight roll-off, gamut compression back into the display volume) lives on the **View**, which is a separate `ViewTransform` object composed with the display only when you go through `DisplayViewTransform`. Calling `getProcessor(scene_referred_space, display_space)` directly skips the view entirely and just re-encodes scene-linear values straight into the display's gamma/primaries — bright or saturated pixels end up negative or above `1.0` instead of being compressed into range. Confirmed against the Academy's public reference ACES 2.0 config (which Flame's `aces2.0_config` ships unmodified): a saturated red at `(2.0, 0.05, 0.05)` in ACEScg comes out as `(1.66, -0.52, 0.09)` via the plain-`getProcessor` path vs. `(1.00, 0.28, 0.31)` via `DisplayViewTransform` with the `"ACES 2.0 - SDR 100 nits (Rec.709)"` view.
 
 `tests/fixtures/test_ocio.ocio` mirrors this Display/View split with a minimal stand-in: a `"Raw"` view (identity passthrough, no view transform — proves the pipe-through path works) and an `"ACES 2.0 - SDR 100 nits (Rec.709)"` view whose `ViewTransform` halves scene-referred values (a stand-in for real tone-mapping — proves the view transform is actually being applied, not skipped).
+
+**Pre-2026 Flame names (2026-10-28).** Flame 2025 and earlier used SynColor, not OCIO; there is no SynColor engine usable outside Flame, so a SynColor code path isn't possible. Instead both functions resolve every colour-space/display name through `_resolve_name()`: if the loaded config lacks the name, its pre-2026 equivalent from `LEGACY_NAMES` is used when the config has that. The 11 pairs are the 2026+ ACES 2.0 config's own aliases and were checked to give the same pixels to ACEScg in both that config and Autodesk's `legacy_configs/syncolor_*` configs (≤3e-7, V-Gamut 4e-4); every mapped legacy name exists in all four legacy configs. `Linear S-Gamut3.Cine` has no counterpart and fails with OCIO's own error. A config that has the new name always uses it, so 2026+ behaviour is unchanged. `apply_colour_transform()` also checks the `view` exists for the display and raises listing the available views (the default ACES 2.0 view isn't in the legacy configs). Tests use a self-made legacy-named fixture (`tests/fixtures/test_ocio_legacy.ocio`); Autodesk's configs are not in the repo (user decision: not redistributed).
 
 **`apply_colourspace_transform()` (added 2026-08-19) is the plain `getProcessor(input_space, output_space)` call this section just described as wrong for scene→display work — and it's exactly right for a different job:** reconciling two colour spaces that are *both already scene-referred* (e.g. a plate's native camera gamut vs. a common working space like ACEScg), where no tone-mapping should be involved at all. Both endpoints there are ordinary `colorspaces:` entries, not `display_colorspaces:` ones, so there's no View to skip and no out-of-range risk of the kind measured above. Built for Harmonize's foreground/background primaries-reconciliation need — see `nodes/CLAUDE.md`'s `OpenClipColourSpaceTransform` entry.

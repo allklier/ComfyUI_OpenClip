@@ -9,6 +9,11 @@ from ._paths import resolve_clip_path
 # Guard against probing excessively broad path prefixes (e.g. root '/').
 _AUTO_REMAP_MIN_PREFIX_PARTS = 2
 
+# Movie containers a .clip may reference (Autodesk's own examples use .mov). The installed
+# OIIO has no movie reader, so these are refused up front with a clear message instead of
+# a generic "could not open".
+_MOVIE_EXTENSIONS = {".mov", ".mp4", ".m4v", ".mxf", ".avi", ".mkv"}
+
 
 def _resolve_read_plan(clip_path: str, version: str, start_frame: int, end_frame: int, path_from: str, path_to: str):
     """Resolve clip_path/version/frame range into an absolute frame pattern.
@@ -28,6 +33,11 @@ def _resolve_read_plan(clip_path: str, version: str, start_frame: int, end_frame
 
     span = clip_version.spans[0]
     abs_pattern = str(Path(clip_path).parent / span.path)
+    if Path(span.path).suffix.lower() in _MOVIE_EXTENSIONS:
+        raise ValueError(
+            f"{abs_pattern}: movie containers are not supported -- OpenClipReader reads "
+            f"image sequences (EXR/PNG) only"
+        )
 
     path_from_s = path_from.strip()
     path_to_s = path_to.strip()
