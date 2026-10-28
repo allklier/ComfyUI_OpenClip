@@ -11,3 +11,6 @@ docs/
 # Dev/acceptance tooling and sibling-project requirements — not needed to run the nodes
 acceptance/
 EXR_REQUIREMENTS.md
+
+# Security-scan accepted risks — not needed to run the nodes
+.security-scans.toml

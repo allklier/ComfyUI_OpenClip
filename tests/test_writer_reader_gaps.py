@@ -89,6 +89,24 @@ def test_writer_dotdot_destination_lands_beside_the_source(tmp_path):
     assert Path(clip) == tmp_path / "out" / "s.clip"
 
 
+@pytest.mark.parametrize("field, value", [
+    ("clip_name", "../escaped"), ("clip_name", "a/b"), ("clip_name", "a\\b"), ("clip_name", ".."),
+    ("version_name", "../v001"), ("version_name", "v/001"), ("version_name", ".."),
+])
+def test_writer_rejects_names_that_leave_their_folder_and_writes_nothing(tmp_path, field, value):
+    # A crafted .clip <name> wired from a Reader must not redirect where the Writer writes.
+    out = tmp_path / "out"
+    out.mkdir()
+    with pytest.raises(ValueError, match=f"{field} .* must be a plain name"):
+        _write(out, **{field: value})
+    assert list(tmp_path.rglob("*.*")) == []
+
+
+def test_writer_allows_dots_inside_a_name(tmp_path):
+    clip = _write(tmp_path, clip_name="shot..v2", version_name="v1.2")
+    assert Path(clip) == tmp_path / "shot..v2.clip"
+
+
 def test_writer_suffix_pattern_names_clip_and_frames_alike(tmp_path):
     clip = _write(tmp_path, clip_filename="$(path)/$(clip_name)_clean", include_version_in_filename=False)
     assert Path(clip).name == "s_clean.clip"
@@ -231,6 +249,15 @@ def test_overwrite_of_one_version_leaves_other_versions_frames_alone(tmp_path):
     assert [p.stat().st_mtime_ns for p in sorted((Path(clip).parent / "s" / "v001").glob("*.exr"))] == stamp
     assert len(list((Path(clip).parent / "s" / "v002").glob("*.exr"))) == 1
     assert openclip_xml.parse(clip).versions["v002"].spans[0].duration == 1
+
+
+def test_overwrite_with_glob_characters_in_the_name_leaves_other_clips_frames_alone(tmp_path):
+    # Was a real bug: overwriting "sh*" globbed "sh*.*.exr" and deleted shotB's frames.
+    flat = dict(layout="Flat", include_version_in_filename=False, version_name="v001")
+    _write(tmp_path, clip_name="shotB", **flat)
+    _write(tmp_path, clip_name="sh*", **flat)
+    _write(tmp_path, clip_name="sh*", n=1, overwrite=True, **flat)
+    assert sorted(p.name for p in tmp_path.glob("*.exr")) == ["sh*.0001.exr", "shotB.0001.exr", "shotB.0002.exr"]
 
 
 def test_overwrite_true_on_a_fresh_version_name_just_writes(tmp_path):

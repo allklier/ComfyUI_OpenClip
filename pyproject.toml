@@ -9,9 +9,9 @@ description = "OpenClip read/write nodes for ComfyUI - file exchange with Flame"
 requires-python = ">=3.10"
 license = { file = "LICENSE.txt" }
 dependencies = [
-    "lxml>=5.0",
+    "lxml>=6.1",
     "openimageio>=3.0",
-    "opencolorio>=2.3",
+    "opencolorio>=2.5.1",
 ]
 
 [project.optional-dependencies]
