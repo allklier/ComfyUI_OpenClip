@@ -135,7 +135,7 @@ The "– not run" lines stay as they are; the added lines record what was done.
 | Tier | What | Where |
 |---|---|---|
 | smoke | unit tests + synthetic Flame-like cases | `tests.yml`, every push/PR/release (≈4 s) |
-| full | smoke + real-clip fidelity (`--tier full`) + live ComfyUI acceptance, normal and without OCIO | `scripts/maintainer_test.sh`, on the ComfyUI test machine |
+| full | smoke + real-clip fidelity (`--tier full`) + live ComfyUI acceptance, normal and without OCIO + Flame checks when the bridge runs | `scripts/maintainer_test.sh`, on the ComfyUI test machine |
 | manual | 5 steps in Flame | `docs/FLAME_TEST.md` |
 
 Details and the reasons: `tests/CLAUDE.md` "Tiers".
@@ -162,6 +162,16 @@ copied back to `--out` (default: the current folder). Logs stay in `~/oc_accept/
 the test host. Real clips there: `~/oc_accept/flame_clips/` (the planned set, `tests/flame_clips.md`),
 `/opt/Autodesk/openclip_examples`, and `$OPENCLIP_FLAME_CLIPS`.
 
+**Flame checks** (2026-10-29). When Flame on the test host runs the
+flame-test-bridge hook (a local, unpublished repo: `~/ClaudeCode/flame-test-bridge`,
+deployed to `~/flame-test-bridge`; hook installed in `/opt/Autodesk/shared/python`) with the
+project `Claude_Test_Harness` open, the run also writes test clips with the ref's Writer and has
+Flame import them: start timecode, exact names, frame rate, size, an append onto a real Flame
+clip (`$FLAME_CLIP`), and Flame adding its own version to a Writer clip. Detected by a heartbeat
+younger than 30 s in `~/flame-test-bridge-run/`; otherwise `results.flame_checks` is
+`{"status": "not run", "reason": …}`. They count towards `overall` only when they ran.
+`FLAME_BRIDGE`/`FLAME_BRIDGE_RUN` override the two folders.
+
 ### Gating promote on the result file
 
 Mirrors LTX Alpha Gen's `promote.sh`; the checks are `release_plan.py gate`
@@ -182,8 +192,9 @@ the inputs.
    any real clip can't promote). A missing or unreadable file refuses too, with the upload
    command in the message.
 3. The Verification line about that run comes from the file:
-   `Full tier + live ComfyUI (maintainer run <timestamp>, <commit>): ✔ pytest <n> passed (real Flame clips <n>), acceptance <n>/<n>, without OCIO <n>/<n>`.
-   The free-text `verification` input stays for the Flame line, which no machine can produce.
+   `Full tier + live ComfyUI (maintainer run <timestamp>, <commit>): ✔ pytest <n> passed (real Flame clips <n>), acceptance <n>/<n>, without OCIO <n>/<n>, Flame <version> checks <n>/<n>`
+   (or `Flame checks not run`; the Flame checks are reported, not required).
+   The free-text `verification` input stays for the manual Flame line (`docs/FLAME_TEST.md`).
 
 **Exception: patch releases** (only Z of X.Y.Z changed against the previous vX.Y.Z tag, the
 same classification `release.yml` uses, `[pre-release]` marker or not) are exempt and promote
