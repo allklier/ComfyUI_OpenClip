@@ -49,7 +49,7 @@ NODES = {"OpenClipReader", "OpenClipWriter", "OpenClipExrSequenceReader", "OpenC
 # Reader / EXR Sequence Reader output slots (2.0)
 IMAGE, MASK, CLIP_INFO, AOV_HANDLE, FRAME_COUNT, WIDTH, HEIGHT, FPS, CLIP_REPORT = range(9)
 # OpenClipClipInfo output slots
-CI_START_TIMECODE, CI_COLOUR_SPACE = 4, 6
+CI_START_TIMECODE, CI_COLOUR_SPACE, CI_BIT_DEPTH = 4, 6, 10
 
 fc = ff = None  # tests/flame_compare and tests/flame_fixtures of the pack under test (see main)
 
@@ -170,7 +170,7 @@ def writer(image, clip_path="", clip_name="", version="next", overwrite=False, f
         "clip_filename": "$(path)/$(clip_name).clip", "version_name": version, "overwrite": overwrite,
         "include_version_in_filename": True, "fps": 0.0, "start_frame": -1, "start_timecode": "",
         "frame_padding": 0, "colour_space": "", "format_version": "",
-        "file_format": fmt, "exr_bit_depth": "half (16-bit)", "exr_compression": "ZIP",
+        "file_format": fmt, "exr_bit_depth": "auto", "exr_compression": "ZIP",
         "aov_layout": layout, "publish": False}
     if clip_info is not None:
         inputs["clip_info"] = clip_info
@@ -392,7 +392,8 @@ def test6_issue7(srv: Server, work: str) -> None:
 
     # reader ui output + clip info node
     h = srv.run({"1": reader(clip), "2": {"class_type": "OpenClipClipInfo", "inputs": {"clip_info": ["1", CLIP_INFO]}},
-                 "3": preview(["2", CI_START_TIMECODE]), "4": preview(["2", CI_COLOUR_SPACE])})
+                 "3": preview(["2", CI_START_TIMECODE]), "4": preview(["2", CI_COLOUR_SPACE]),
+                 "5": preview(["2", CI_BIT_DEPTH])})
     err = failed(h)
     outs = h.get("outputs", {})
     report = (outs.get("1", {}).get("clip_report") or [""])[0]
@@ -402,6 +403,8 @@ def test6_issue7(srv: Server, work: str) -> None:
     colour_text = (outs.get("4", {}).get("text") or [""])[0]
     record("T6 OpenClipClipInfo: start_timecode and colour_space outputs", (tc_text, colour_text) == ("01:00:00:00", "Rec.709 video"),
            f"{tc_text!r} {colour_text!r}")
+    depth_text = (outs.get("5", {}).get("text") or [""])[0]
+    record("T6 OpenClipClipInfo: bit_depth output", depth_text == "half", repr(depth_text))
 
     # new clip: timecode, colour, untrimmed name, all fields on auto
     new_dir = os.path.join(base, "new")
