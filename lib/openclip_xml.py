@@ -166,9 +166,17 @@ def read_format(clip_path: str) -> ClipFormat:
         child = el.find(tag)
         return (child.text or default).strip() if child is not None else default
 
+    # The current version's feed: Flame keeps versions of different sizes in one clip, so the
+    # first feed is not "the clip's format" (was track.find(".//storageFormat"), fixed 2026-10-29).
+    feeds_el = track.find("feeds")
+    feed = None
+    if feeds_el is not None:
+        vers_el = root.find("versions")
+        cur = feeds_el.get("currentVersion") or (vers_el.get("currentVersion") if vers_el is not None else None)
+        feed = next((f for f in feeds_el.findall("feed") if f.get("vuid") == cur), None)
     # Many Autodesk example clips carry no <storageFormat> at all; unknown fields stay at
     # 0/"" so the writer's mismatch check skips them.
-    storage = track.find(".//storageFormat")
+    storage = (feed if feed is not None else track).find(".//storageFormat")
     has_storage = storage is not None
     if not has_storage:
         storage = etree.Element("storageFormat")

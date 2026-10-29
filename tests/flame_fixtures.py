@@ -94,6 +94,7 @@ def _write_frames(case: FlameLike, pattern: str, seed: int) -> None:
         spec = oiio.ImageSpec(SIZE, SIZE, case.channels, fmt)
         spec.channelnames = ("R", "G", "B", "A")[:case.channels]
         spec["compression"] = "piz"
+        spec.attribute("name", "rgb")  # Flame names its single part "rgb"
         spec.attribute("framesPerSecond", oiio.TypeRational, (case.rate.numerator, case.rate.denominator))
         if case.exr_colour_value:
             spec.attribute("autodeskColorSpace", case.exr_colour_value)

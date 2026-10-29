@@ -142,3 +142,51 @@ def test_oracle_bcd_matches_flames_own_exr_value():
     # testclips/clip_1/testclip_1.000002.exr (Flame 2027): smpte:TimeCode (272900614, 0) = 10:44:22:06
     assert bcd_encode(*tc_label(927894, 24, False), False) == 272900614
     assert bcd_decode(272900614) == "10:44:22:06"
+
+
+# --- bugs found by the first maintainer run on real clips (2026-10-29) -----------------------------
+
+
+@pytest.mark.parametrize("layout", ["Multichannel", "Separate Files"])
+def test_aovs_from_a_flame_source_round_trip(tmp_path, layout):
+    """Flame's EXRs carry name="rgb". With clip_info wired (2.0 carries the header metadata
+    always) that name was copied onto every part: Multichannel failed ("Each part should have a
+    unique name"), Separate Files siblings were renamed and read back as None."""
+    import torch
+    from ComfyUI_OpenClip.nodes.aov_reader import OpenClipAOVReader
+    from ComfyUI_OpenClip.nodes.aov_writer import OpenClipAOVWriter
+    from ComfyUI_OpenClip.nodes.writer import OpenClipWriter
+    from .flame_roundtrip import read
+    r = read(build(FlameLike("aov_src", tc="01:00:00:00"), tmp_path / "src"))
+    assert r["info.metadata"].get("name") == "rgb"
+    matte = r["IMAGE"][..., 0]
+    chain = OpenClipAOVWriter().execute(name="depth", matte=matte)[0]
+    chain = OpenClipAOVWriter().execute(name="normals", image=r["IMAGE"], aov_chain=chain)[0]
+    out = OpenClipWriter().execute(IMAGE=r["IMAGE"], clip_info=r["clip_info"], clip_path=str(tmp_path / "out"),
+                                   aov_chain=chain, aov_layout=layout)[0]
+    back = read(out)
+    assert back["info.aovs"] == ["depth", "normals"]
+    _img, m = OpenClipAOVReader().execute(aov_handle=back["aov_handle"], part_name="depth")
+    img, _m = OpenClipAOVReader().execute(aov_handle=back["aov_handle"], part_name="normals")
+    assert torch.allclose(m, matte, atol=1e-3) and torch.allclose(img, r["IMAGE"], atol=1e-3)
+
+
+def test_append_compares_the_format_with_the_current_version(tmp_path):
+    """Flame keeps versions of different sizes in one clip (a real clip on the share: v01-v05
+    1920x1088, v06-v07 1280x720). The format check compared with the *first* feed, so appending
+    at the current version's own size was refused."""
+    clip = build(FlameLike("mixed", versions=("v0", "v1")), tmp_path)
+    text = clip.read_text(encoding="utf-8")
+    first_feed_end = text.index("</feed>")
+    head = text[:first_feed_end].replace('<width type="uint">8</width>', '<width type="uint">16</width>')
+    head = head.replace('<height type="uint">8</height>', '<height type="uint">16</height>')
+    clip.write_text(head + text[first_feed_end:], encoding="utf-8")
+    diffs, new = append_check(clip)  # 8x8, the current version's size
+    assert diffs == [] and new == ["v2"]
+
+    import torch
+    from ComfyUI_OpenClip.nodes.writer import OpenClipWriter
+    from .flame_roundtrip import read
+    info = read(clip)["clip_info"]
+    with pytest.raises(ValueError, match="width: existing=8 new=16"):
+        OpenClipWriter().execute(IMAGE=torch.rand(3, 16, 16, 3), clip_info=info)

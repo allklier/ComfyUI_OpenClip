@@ -36,6 +36,12 @@ _SKIP_METADATA_KEYS: frozenset[str] = frozenset({
     "openexr:roundingMode",
     "openexr:dwaCompressionLevel",
     "openexr:multiView",
+    # A part's identity is set by the writer (AOV part names). Flame's single-part EXRs carry
+    # name="rgb"; copied onto every part it made multi-part writes fail ("Each part should have
+    # a unique name") and renamed Separate Files siblings so they couldn't be found (2.0).
+    "name",
+    "oiio:subimagename",
+    "oiio:subimages",
 })
 
 CHANNELS_BEAUTY: tuple[str, ...] = ("R", "G", "B")
