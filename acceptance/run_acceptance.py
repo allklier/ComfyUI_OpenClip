@@ -170,7 +170,7 @@ def writer(image, clip_path="", clip_name="", version="next", overwrite=False, f
         "clip_filename": "$(path)/$(clip_name).clip", "version_name": version, "overwrite": overwrite,
         "include_version_in_filename": True, "fps": 0.0, "start_frame": -1, "start_timecode": "",
         "frame_padding": 0, "colour_space": "", "format_version": "",
-        "file_format": fmt, "exr_bit_depth": "auto", "exr_compression": "ZIP",
+        "file_format": fmt, "exr_bit_depth": "auto", "exr_compression": "auto",
         "aov_layout": layout, "publish": False}
     if clip_info is not None:
         inputs["clip_info"] = clip_info
