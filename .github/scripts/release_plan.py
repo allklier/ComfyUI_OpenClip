@@ -9,12 +9,18 @@ Rules and how to cut a release: docs/ci.md.
            a minor/major bump (or the first release) is a pre-release. A
            "[pre-release]" marker in the annotated tag message turns a patch
            into a pre-release; nothing turns a minor/major into a normal one.
+  gate:    before promote: a patch release passes as it is; a minor/major
+           release needs the maintainer run's result file
+           (openclip-test-<tag>.json, uploaded to the release) for exactly
+           this tag and commit, full tier, PASS, real-clip tests > 0. Writes
+           the verification line taken from that file.
   promote: rewrite the notes of an existing release to "FULLY TESTED",
-           optionally adding one verification line.
+           adding the given verification lines.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -70,23 +76,32 @@ def split_message(message: str) -> tuple[str, str, bool]:
     return subject.strip(), body.strip(), marker
 
 
-def classify(tag: str, version: str, tags: list[str], message: str = "") -> Plan:
+def bump_kind(tag: str, tags: list[str]) -> tuple[str, str | None]:
+    """-> (kind, previous tag): "patch", "minor", "major", or "initial" when there is no
+    earlier vX.Y.Z tag."""
     current = parse_tag(tag)
     if current is None:
         raise ReleaseError(f"tag {tag!r} is not vMAJOR.MINOR.PATCH (e.g. v1.2.3)")
+    prev = previous_tag(tag, tags)
+    if prev is None:
+        return "initial", None
+    p = parse_tag(prev)
+    if current[0] != p[0]:
+        return "major", prev
+    if current[1] != p[1]:
+        return "minor", prev
+    return "patch", prev
+
+
+def classify(tag: str, version: str, tags: list[str], message: str = "") -> Plan:
+    if parse_tag(tag) is None:
+        raise ReleaseError(f"tag {tag!r} is not vMAJOR.MINOR.PATCH (e.g. v1.2.3)")
     if tag != f"v{version}":
         raise ReleaseError(f"tag {tag} does not match pyproject.toml version {version!r} (expected v{version})")
-    prev = previous_tag(tag, tags)
+    kind, prev = bump_kind(tag, tags)
     _, _, marker = split_message(message)
     if prev is None:
         return Plan(tag, None, "initial", True, ["no earlier vX.Y.Z tag: first release is a pre-release"])
-    p = parse_tag(prev)
-    if current[0] != p[0]:
-        kind = "major"
-    elif current[1] != p[1]:
-        kind = "minor"
-    else:
-        kind = "patch"
     if kind == "patch":
         if marker:
             return Plan(tag, prev, kind, True, [f"patch bump from {prev}", "[pre-release] in the tag message"])
@@ -124,14 +139,74 @@ def render_notes(plan: Plan, message: str, commits: list[str], ci_line: str, com
     return title, "\n".join(parts) + "\n"
 
 
-def promote(body: str, verification: str = "") -> str:
-    """Set the Status line to FULLY TESTED; add `verification` as a bullet."""
+def result_file_name(tag: str) -> str:
+    """What scripts/maintainer_test.sh writes for a run of `tag` (a vX.Y.Z tag needs no escaping)."""
+    return f"openclip-test-{tag}.json"
+
+
+def gate(tag: str, tags: list[str], tag_commit: str, result: dict | None) -> str:
+    """Check that `tag` may be promoted; -> the verification line from the result file ("" for
+    a patch). A patch release (only Z changed vs the previous vX.Y.Z tag) is exempt and promotes
+    as before. Anything else needs the maintainer run's result file for exactly this tag and
+    commit: tier full, overall PASS, at least one real-clip test passed."""
+    kind, prev = bump_kind(tag, tags)
+    if kind == "patch":
+        return ""
+    name = result_file_name(tag)
+    what = f"{kind} release {tag}" + (f" (previous {prev})" if prev else "")
+    if result is None:
+        raise ReleaseError(f"{what} needs the maintainer run's result: run scripts/maintainer_test.sh {tag}, "
+                           f"then gh release upload {tag} {name}")
+    if not isinstance(result, dict):
+        raise ReleaseError(f"{name}: not a JSON object")
+
+    def get(*keys):
+        value = result
+        for k in keys:
+            if not isinstance(value, dict) or k not in value:
+                raise ReleaseError(f"{name}: missing {'.'.join(keys)}")
+            value = value[k]
+        return value
+
+    problems = []
+    if get("ref") != tag:
+        problems.append(f"ref is {get('ref')!r}, not {tag!r} (run the maintainer test on the tag itself)")
+    commit = get("commit")
+    if not (isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{7,40}", commit)
+            and tag_commit.lower().startswith(commit)):
+        problems.append(f"commit is {commit!r}, the tag's commit is {tag_commit}")
+    if get("tier") != "full":
+        problems.append(f"tier is {get('tier')!r}, not 'full'")
+    if get("overall") != "PASS":
+        problems.append(f"overall is {get('overall')!r}, not 'PASS'")
+    real = get("results", "pytest_full", "real_clip_tests", "passed")
+    if not (isinstance(real, int) and real > 0):
+        problems.append(f"results.pytest_full.real_clip_tests.passed is {real!r}: no real Flame clip was tested")
+    if problems:
+        raise ReleaseError(f"{name} does not allow promoting {tag}: " + "; ".join(problems))
+
+    def count(*keys):
+        value = get(*keys)
+        return value if isinstance(value, int) else 0
+
+    py = ("results", "pytest_full")
+    acc, noocio = ("results", "acceptance_normal"), ("results", "acceptance_noocio")
+    return (f"Full tier + live ComfyUI (maintainer run {result.get('timestamp', '?')}, {commit[:7]}): ✔ "
+            f"pytest {count(*py, 'passed')} passed (real Flame clips {real}), "
+            f"acceptance {count(*acc, 'passed')}/{count(*acc, 'passed') + count(*acc, 'failed')}, "
+            f"without OCIO {count(*noocio, 'passed')}/{count(*noocio, 'passed') + count(*noocio, 'failed')}")
+
+
+def promote(body: str, *verifications: str) -> str:
+    """Set the Status line to FULLY TESTED; add each non-empty verification as a bullet."""
     if START not in body or END not in body or not STATUS_RE.search(body):
         raise ReleaseError("release notes have no verification block written by release.yml")
     head, rest = body.split(START, 1)
     block, tail = rest.split(END, 1)
-    verification = " ".join(verification.split())  # one line, no markup tricks across lines
-    if verification:
+    for verification in verifications:
+        verification = " ".join(verification.split())  # one line, no markup tricks across lines
+        if not verification:
+            continue
         lines = block.split("\n")
         last_bullet = max(i for i, line in enumerate(lines) if line.startswith("- "))
         lines.insert(last_bullet + 1, f"- {verification}")
@@ -171,10 +246,16 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("previous", help="print the previous vX.Y.Z tag (empty if none)")
     r.add_argument("--tag", required=True)
     r.add_argument("--tags-file", required=True)
+    g = sub.add_parser("gate", help="may this tag be promoted? writes the verification line")
+    g.add_argument("--tag", required=True)
+    g.add_argument("--tags-file", required=True, help="all tag names, one per line")
+    g.add_argument("--tag-commit", required=True, help="full SHA of the commit the tag points to")
+    g.add_argument("--result-file", required=True, help="openclip-test-<tag>.json; may be absent for a patch")
+    g.add_argument("--line-out", required=True, help="the verification line ('' for a patch)")
     q = sub.add_parser("promote")
     q.add_argument("--notes-in", required=True)
     q.add_argument("--notes-out", required=True)
-    q.add_argument("--verification", default="")
+    q.add_argument("--verification", action="append", default=[], help="a line to add; may repeat")
     a = ap.parse_args(argv)
 
     try:
@@ -197,9 +278,21 @@ def main(argv: list[str] | None = None) -> int:
         elif a.cmd == "previous":
             tags = _read(a.tags_file).split()
             print((previous_tag(a.tag, tags) if parse_tag(a.tag) else None) or "")
+        elif a.cmd == "gate":
+            tags = [t.strip() for t in _read(a.tags_file).splitlines() if t.strip()]
+            result = None
+            if os.path.exists(a.result_file):
+                try:
+                    result = json.loads(_read(a.result_file))
+                except ValueError as e:
+                    raise ReleaseError(f"{a.result_file}: not valid JSON ({e})") from None
+            line = gate(a.tag, tags, a.tag_commit, result)
+            with open(a.line_out, "w", encoding="utf-8") as f:
+                f.write(line)
+            print(line or f"{a.tag}: patch release, promoted without a result file")
         else:
             with open(a.notes_out, "w", encoding="utf-8") as f:
-                f.write(promote(_read(a.notes_in), a.verification))
+                f.write(promote(_read(a.notes_in), *a.verification))
     except ReleaseError as e:
         print(f"::error::{e}")
         return 1

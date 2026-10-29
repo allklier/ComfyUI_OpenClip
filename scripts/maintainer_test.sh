@@ -45,7 +45,8 @@ mkdir -p "$OUT" && OUT="$(cd "$OUT" && pwd)" || die "can't create $OUT"
 
 if [ -z "$ARCHIVE" ]; then
   SRC="$(cd "$(dirname "$0")/.." && pwd)"
-  COMMIT=$(git -C "$SRC" rev-parse --short "$REF^{commit}") || die "unknown ref $REF"
+  # Full SHA: promote.yml compares it with the tag's commit (docs/ci.md "Gating promote").
+  COMMIT=$(git -C "$SRC" rev-parse "$REF^{commit}") || die "unknown ref $REF"
   TMP=$(mktemp -d)
   git -C "$SRC" archive --format=tar --prefix=ComfyUI_OpenClip/ "$REF" >"$TMP/pack.tar" || die "git archive failed"
   if [ -n "$HOST" ]; then

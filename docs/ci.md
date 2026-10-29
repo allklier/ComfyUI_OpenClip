@@ -120,13 +120,15 @@ Tags like `v1.2.0-rc1` don't match the strict format and fail in plan.
 
 ### Promote (`promote.yml`)
 
-After testing by hand (acceptance run on a live ComfyUI, Flame): Actions →
-**promote** → Run workflow, `tag` = the release, optional `verification` =
-one line to add, e.g. `Acceptance (live ComfyUI): ✔ akflame5, 2026-11-02`.
-It clears the pre-release flag, adds the line to the Verification list and
-sets `**Status: FULLY TESTED**`. It refuses releases whose notes have no
+After testing by hand: Actions → **promote** → Run workflow, `tag` = the
+release, optional `verification` = one line to add for the Flame check
+(`docs/FLAME_TEST.md`), e.g. `Flame 2027: ✔ 2026-11-02`. It first runs the
+**gate** (below): a minor or major release needs the maintainer run's result
+file on the release, and the line about that run is taken from the file. Then it
+clears the pre-release flag, adds the line(s) to the Verification list and sets
+`**Status: FULLY TESTED**`. It refuses releases whose notes have no
 Verification block written by `release.yml` (older, hand-written releases).
-The "– not run" lines stay as they are; the added line records what was done.
+The "– not run" lines stay as they are; the added lines record what was done.
 
 ## Test tiers and the maintainer run
 
@@ -153,23 +155,46 @@ It exports the ref with `git archive`, installs it into the private ComfyUI base
 (`~/oc_accept/base/custom_nodes/ComfyUI_OpenClip`; the shared ComfyUI install is only read),
 runs `pytest --tier full`, then starts the private ComfyUI (`acceptance/start_private_comfyui.sh`,
 port 8199, `--cpu`) and runs `acceptance/run_acceptance.py` normally and with OCIO blocked, and
-writes `openclip-test-<ref>.json` (ref, commit, version, per-tier counts incl. how many
-real-clip tests ran, `overall` PASS/FAIL; no host or user names). With `--host` the file is
+writes `openclip-test-<ref>.json` (ref, commit (full SHA), version, per-tier counts incl. how many
+real-clip tests ran, `overall` PASS/FAIL; no host or user names). For a release, run it with the
+tag as `<ref>` and upload the file to the release (see "Gating promote" below). With `--host` the file is
 copied back to `--out` (default: the current folder). Logs stay in `~/oc_accept/mt/logs/` on
 the test host. Real clips there: `~/oc_accept/flame_clips/` (the planned set, `tests/flame_clips.md`),
 `/opt/Autodesk/openclip_examples`, and `$OPENCLIP_FLAME_CLIPS`.
 
-### Gating promote on the result file (PROPOSAL, not wired)
+### Gating promote on the result file
 
-`promote.yml` does not read the result file yet. Proposed, mirroring LTX Alpha Gen's `promote.sh`:
+Mirrors LTX Alpha Gen's `promote.sh`; the checks are `release_plan.py gate`
+(tested in `.github/scripts/test_release_plan.py`), `promote.yml` only fetches
+the inputs.
 
-1. After the maintainer run: `gh release upload <tag> openclip-test-<tag>.json`.
-2. `promote.yml` downloads it and refuses unless `ref` = the tag, `commit` = the tag's commit,
-   `tier` = `full`, `overall` = `PASS`, and `results.pytest_full.real_clip_tests.passed` > 0
-   (so a run without any real clip can't promote).
-3. It then writes the Verification line from the file (counts, timestamp) instead of the
-   free-text `verification` input, and keeps the free-text input for the Flame line
-   (`docs/FLAME_TEST.md`), which no machine can produce.
+1. Run the maintainer test **on the tag itself** (`scripts/maintainer_test.sh v2.0.0 --host <test host>`),
+   then attach the result to the release:
+
+   ```sh
+   gh release upload v2.0.0 openclip-test-v2.0.0.json
+   ```
+
+2. `promote.yml` downloads `openclip-test-<tag>.json` from the release assets and the gate
+   refuses unless `ref` = the tag, `commit` = the tag's commit (the script writes the full SHA;
+   an older file's short SHA of at least 7 characters is accepted as a prefix), `tier` = `full`,
+   `overall` = `PASS`, and `results.pytest_full.real_clip_tests.passed` > 0 (so a run without
+   any real clip can't promote). A missing or unreadable file refuses too, with the upload
+   command in the message.
+3. The Verification line about that run comes from the file:
+   `Full tier + live ComfyUI (maintainer run <timestamp>, <commit>): ✔ pytest <n> passed (real Flame clips <n>), acceptance <n>/<n>, without OCIO <n>/<n>`.
+   The free-text `verification` input stays for the Flame line, which no machine can produce.
+
+**Exception: patch releases** (only Z of X.Y.Z changed against the previous vX.Y.Z tag, the
+same classification `release.yml` uses, `[pre-release]` marker or not) are exempt and promote
+as before, with no result file. The first release (no earlier tag) is not a patch and is gated.
+
+The tag's commit is resolved through the same GitHub API calls `release.yml` already uses
+(`git/ref/tags/<tag>`, and `git/tags/<sha>` → `.object.sha` for an annotated tag; checked
+read-only against `v1.1.1` on 2026-10-29: it gives `caae91f`, the same as
+`git rev-parse v1.1.1^{commit}`). `gh release download <tag> --pattern <file> --dir <dir>`
+per `gh release download --help` (gh 2.45). No new action, no new permission
+(the job already has `contents: write` to edit the release; reading assets needs only read).
 
 ## What is verified, and what isn't
 
@@ -180,6 +205,7 @@ the test host. Real clips there: `~/oc_accept/flame_clips/` (the planned set, `t
 | All workflows | `actionlint` 1.7.12 and `zizmor` 1.30.1 (`--offline`), the scanner's pinned versions. zizmor reports two low "self-repository" notes in `release.yml`; kept on purpose (comment in the file: the pinned actionlint rejects the suggested `$/` syntax) |
 | Dry run, manual full scan | ran green on `master` after the merge (2026-10-28): the v1.1.1 dry run classified it as a patch (normal release) and printed the notes; the full scan found 0 high, 3 accepted risks, 2 low notes |
 | Tag push, tests + scan from the release, publish | v1.1.1 (2026-10-28): the release run passed tests and scan through the two-level call (`release.yml` → `security-scan.yml` → the scanner) and created the release with the multi-line notes intact |
+| Promote gate | `release_plan.py gate` unit tests (patch exempt; minor/major without, with a wrong and with a good result file); `actionlint` 1.7.12 and `zizmor` 1.30.1 on `promote.yml` (no new findings). The workflow itself has not run on GitHub |
 | Promote, weekly schedule | not run yet. The schedule first fires on a Monday at 05:17 UTC; promote is first used when a release is tested in Flame |
 
 Not decided by CI: whether GitHub moves the "Latest" badge when a

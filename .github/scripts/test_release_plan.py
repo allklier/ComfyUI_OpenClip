@@ -1,9 +1,12 @@
 """Tests for release_plan.py (run in CI by tests.yml: pytest .github/scripts)."""
 from __future__ import annotations
 
+import json
+import re
+
 import pytest
 
-from release_plan import ReleaseError, classify, main, previous_tag, promote, render_notes, split_message
+from release_plan import ReleaseError, classify, gate, main, previous_tag, promote, render_notes, split_message
 
 # The repo's real tags on 2026-10-28, odd early names included.
 REAL_TAGS = ["v.081", "v.09", "v0.8", "v0.91", "v0.92", "v0.93", "v0.94", "v0.95", "v1.0.0", "v1.0.1", "v1.1.0"]
@@ -121,3 +124,110 @@ def test_main_plan_mismatch_fails(tmp_path, capsys):
     rc = main(["plan", "--tag", "v1.1.1", "--version", "1.1.0", "--tags-file", str(tmp_path / "tags"),
                "--ci-line", "x", "--repo-url", "u", "--notes-out", str(tmp_path / "n")])
     assert rc == 1 and "does not match" in capsys.readouterr().out
+
+
+# --- gate: promote needs the maintainer run's result file, except for a patch ---------------------------
+
+COMMIT = "caae91f8ccccb0307fab257f4184548f5954217b"
+TAGS_2 = REAL_TAGS + ["v1.1.1", "v2.0.0"]
+
+
+def result(**over):
+    """A result file as scripts/maintainer_test.sh writes it (field names copied from there)."""
+    doc = {
+        "schema": 1, "ref": "v2.0.0", "commit": COMMIT, "version": "2.0.0", "tier": "full",
+        "results": {
+            "pytest_full": {"passed": 776, "failed": 0, "skipped": 94, "xfailed": 0, "failed_tests": [],
+                            "real_clip_tests": {"passed": 158, "skipped": 94, "xfailed": 0, "failed": 0},
+                            "exit_code": 0},
+            "acceptance_normal": {"passed": 34, "failed": 0, "failed_tests": [], "exit_code": 0},
+            "acceptance_noocio": {"passed": 6, "failed": 0, "failed_tests": [], "exit_code": 0},
+        },
+        "acceptance_source": "real Flame clip", "environment": {},
+        "timestamp": "2026-10-29T18:00:00Z", "overall": "PASS",
+    }
+    doc.update(over)
+    return doc
+
+
+def test_gate_patch_is_exempt_even_without_a_result_file():
+    assert gate("v1.1.1", REAL_TAGS + ["v1.1.1"], COMMIT, None) == ""
+
+
+@pytest.mark.parametrize("tag", ["v2.0.0", "v1.2.0"])
+def test_gate_minor_or_major_without_result_file_refuses(tag):
+    with pytest.raises(ReleaseError, match=rf"needs the maintainer run's result.*gh release upload {tag} "
+                                           rf"openclip-test-{tag}\.json"):
+        gate(tag, TAGS_2 + [tag], COMMIT, None)
+
+
+def test_gate_first_release_is_not_a_patch():
+    with pytest.raises(ReleaseError, match="initial release"):
+        gate("v0.1.0", [], COMMIT, None)
+
+
+def test_gate_good_result_gives_the_verification_line():
+    line = gate("v2.0.0", TAGS_2, COMMIT, result())
+    assert line == ("Full tier + live ComfyUI (maintainer run 2026-10-29T18:00:00Z, caae91f): ✔ pytest 776 passed "
+                    "(real Flame clips 158), acceptance 34/34, without OCIO 6/6")
+
+
+def test_gate_accepts_a_short_commit():
+    assert gate("v2.0.0", TAGS_2, COMMIT, result(commit=COMMIT[:7]))
+
+
+@pytest.mark.parametrize("over, why", [
+    ({"ref": "feature/2.0-clip-info"}, "ref is 'feature/2.0-clip-info'"),
+    ({"commit": "387d8c1"}, "commit is '387d8c1'"),
+    ({"commit": "caae"}, "commit is 'caae'"),  # too short to identify a commit
+    ({"tier": "smoke"}, "tier is 'smoke'"),
+    ({"overall": "FAIL"}, "overall is 'FAIL'"),
+])
+def test_gate_refuses_a_result_for_something_else(over, why):
+    with pytest.raises(ReleaseError, match=re.escape(why)):
+        gate("v2.0.0", TAGS_2, COMMIT, result(**over))
+
+
+def test_gate_refuses_a_run_without_real_clips():
+    doc = result()
+    doc["results"]["pytest_full"]["real_clip_tests"]["passed"] = 0
+    with pytest.raises(ReleaseError, match="no real Flame clip was tested"):
+        gate("v2.0.0", TAGS_2, COMMIT, doc)
+
+
+def test_gate_refuses_a_file_with_missing_fields():
+    doc = result()
+    del doc["results"]["pytest_full"]["real_clip_tests"]
+    with pytest.raises(ReleaseError, match="missing results.pytest_full.real_clip_tests"):
+        gate("v2.0.0", TAGS_2, COMMIT, doc)
+
+
+def test_promote_adds_several_lines_in_order():
+    plan = classify("v2.0.0", "2.0.0", TAGS_2, ANNOTATED)
+    _, notes = render_notes(plan, ANNOTATED, [], "✔ x", None)
+    out = promote(notes, "Full tier: ✔ a", "", "Flame 2027: ✔ b")
+    assert "- Flame 2027: – not tested\n- Full tier: ✔ a\n- Flame 2027: ✔ b\n\n**Status: FULLY TESTED**" in out
+
+
+def test_main_gate(tmp_path, capsys):
+    (tmp_path / "tags").write_text("\n".join(TAGS_2))
+    args = ["gate", "--tag", "v2.0.0", "--tags-file", str(tmp_path / "tags"), "--tag-commit", COMMIT,
+            "--result-file", str(tmp_path / "openclip-test-v2.0.0.json"), "--line-out", str(tmp_path / "line")]
+    assert main(args) == 1 and "needs the maintainer run's result" in capsys.readouterr().out  # no file
+    (tmp_path / "openclip-test-v2.0.0.json").write_text("{not json")
+    assert main(args) == 1 and "not valid JSON" in capsys.readouterr().out
+    (tmp_path / "openclip-test-v2.0.0.json").write_text(json.dumps(result()))
+    assert main(args) == 0 and (tmp_path / "line").read_text().startswith("Full tier + live ComfyUI")
+    patch = ["gate", "--tag", "v1.1.1", "--tags-file", str(tmp_path / "tags"), "--tag-commit", COMMIT,
+             "--result-file", str(tmp_path / "absent.json"), "--line-out", str(tmp_path / "line")]
+    assert main(patch) == 0 and (tmp_path / "line").read_text() == ""
+    assert "patch release" in capsys.readouterr().out
+
+
+def test_main_promote_with_two_lines(tmp_path):
+    plan = classify("v2.0.0", "2.0.0", TAGS_2, ANNOTATED)
+    _, notes = render_notes(plan, ANNOTATED, [], "✔ x", None)
+    (tmp_path / "in").write_text(notes)
+    assert main(["promote", "--notes-in", str(tmp_path / "in"), "--notes-out", str(tmp_path / "out"),
+                 "--verification", "Full tier: ✔ a", "--verification", "Flame 2027: ✔ b"]) == 0
+    assert "- Full tier: ✔ a\n- Flame 2027: ✔ b\n" in (tmp_path / "out").read_text()
