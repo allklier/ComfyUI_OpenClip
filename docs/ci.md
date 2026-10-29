@@ -30,8 +30,9 @@ scripts only through environment variables.
 - No ComfyUI is installed: the tests call the node classes directly
   (`tests/CLAUDE.md`). The checkout goes into a folder named
   `ComfyUI_OpenClip` because the tests import the repo under that package name.
-- Tests that need Autodesk's example clips (gitignored, not redistributable)
-  are skipped on CI.
+- Tests that need Autodesk's example clips or the real Flame clip in
+  `testclips/` (both gitignored, not redistributable) are skipped on CI; a
+  synthetic Flame-style clip covers the same logic (`tests/test_clip_info.py`).
 - Not covered: a live ComfyUI server, the frontend JS, Flame itself. Those
   are the manual "Acceptance" and "Flame" lines in the release notes.
 

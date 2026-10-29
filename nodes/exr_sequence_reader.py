@@ -70,7 +70,7 @@ class ExrSequenceReader:
 
     `layer` picks the beauty from a single-part multilayer EXR (Blender writes
     '<view layer>.<pass>.<channel>', e.g. 'CamelMatte.Combined'). Blank reads plain
-    R/G/B/A. Every other layer is listed in available_aovs and read with
+    R/G/B/A. Every other layer is listed in clip_report (AOVS) and read with
     OpenClipAOVReader by the same name (e.g. 'ViewLayer.Normal').
     """
 

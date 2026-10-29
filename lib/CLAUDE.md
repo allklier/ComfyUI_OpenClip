@@ -10,6 +10,7 @@ Business logic lives here. The three modules map to the three responsibilities: 
 | `image_io.py` | Read/write EXR and PNG sequences via OIIO |
 | `package_layout.py` | Resolve and build the on-disk package directory tree |
 | `colour_transform.py` | Apply an OCIO Display/View transform to an `IMAGE` tensor |
+| `timecode.py` | SMPTE timecode: `<startTimecode>` ticks ↔ `HH:MM:SS:FF`, OpenEXR `smpte:TimeCode` BCD (2.0) |
 
 ---
 
@@ -86,6 +87,10 @@ A real Flame `<span><path>` can also carry `encoding="file"` for a single static
 All media paths inside the XML are relative to the `.clip` file's directory.
 
 **Track choice, shared by `parse()`, `read_format()` and `append_version()` (`_select_track`, 2026-10-27):** the first track whose `<trackType>` is `video`, else the first track. Autodesk's examples include audio tracks and one-track-per-layer clips (Beauty/Matte/Position/UV); other tracks are ignored and never rewritten. A clip with a `<handler>` and no `<tracks>` (ScanPattern clips) raises "pattern-based clips … not supported". Stereo spans (`<paths><path subFeedId="Left">…`) read the first path.
+
+**Start timecode (2.0, issue #7).** `_parse_clip` reads each feed's `<startTimecode>` (`rate`, `nbTicks`, `dropMode`) into `ClipVersion.start_timecode` as `HH:MM:SS:FF` (`""` if absent) and its `storageFormat/colourSpace` into `ClipVersion.colour_space`. `_build_feed` writes `start_timecode` back (`rate` = rounded fps, as Flame writes 24 for 23.976; `""` → `00:00:00:00`); it used to write `nbTicks` 0 always, which put appended versions an hour apart from a Flame clip at 01:00:00:00. `nbTicks` is taken as a real frame count also for drop-frame, and drop-frame is written as `dropMode` `DF`: both UNVERIFIED (no drop-frame Flame clip seen; only `NDF` in the corpus). `image_io.write_sequence(start_timecode=(ticks, rate, drop))` writes a per-frame `smpte:TimeCode` (verified with OIIO 3.1.15: `spec.attribute("smpte:TimeCode", oiio.TypeTimeCode, (bcd, 0))` reads back, and the BCD of Flame's own frame 2 of the repro clip is reproduced exactly); none for rates above 30 (the BCD frames field holds 0–39).
+
+**Clip names are never stripped (2.0, issue #7):** Flame keeps leading/trailing spaces (`woods walk .clip`). A missing or whitespace-only `<name>` falls back to the file stem.
 
 **Writing never regenerates an existing clip (2026-10-27, issue #4).** `append_version()` loads the file, adds or replaces one `<feed vuid=…>` and one top-level `<version uid=…>`, and sets `currentVersion` on both; everything else — the root schema version, Flame's track names, userData, other tracks, unknown elements — is left as it was. `_build_feed()`/`_build_version()` are shared with `generate()`, which is now used only for brand-new clips.
 
@@ -165,7 +170,7 @@ beauty; `_split_image_matte()` does the equivalent for a generic AOV part, looki
 - **`probe_aov_names(path_pattern, frame_num)`** lists every named subimage beyond 0
   (beauty) for one representative frame — header-only (`spec()`, never `read_image()`),
   so it's cheap even when a part (Cryptomatte) is large. This is what
-  `OpenClipReader.available_aovs` and its in-node display (`web/openclip_reader.js`)
+  the AOVS section of the readers' `clip_report` and its in-node display (`web/openclip_reader.js`)
   are built on.
 - **`read_named_part(path_pattern, start_frame, end_frame, part_name)`** decodes one
   named part across a frame range, lazily — nothing is pixel-decoded until this is
@@ -212,7 +217,11 @@ normals (signed, ~-1..1) or depth (unbounded). Duplicate names in `aov_entries` 
 
 ## Colour-Space Metadata — `image_io.py`
 
-`_extract_frame_metadata()` captures all of a frame's OIIO `extra_attribs` generically (already used for the `CLIP_METADATA` round-trip), which is where an EXR's `oiio:ColorSpace` attribute — if the file has one — shows up. The Reader's `colour_space` output reads this to satisfy `EXR_REQUIREMENTS.md` requirement #3.
+`_extract_frame_metadata()` captures all of a frame's OIIO `extra_attribs` generically (carried as `clip_info["metadata"]`), which is where an EXR's colour attributes — if the file has any — show up.
+
+**Lookup order (2.0, issue #7):** the `.clip`'s own `<feed><storageFormat><colourSpace>` first (the Reader's part), then `colour_space_from_metadata()`: `autodeskColorSpace` (what Flame writes into its EXRs) → `openclip:ColorSpace` → `oiio:ColorSpace`. This reverses the earlier rule "EXR header, not the XML": that rule assumed the XML tag is always display-referred, but real clips carry scene-referred tags there too (Harmonize's duck clips: `<colourSpace>ACEScg</colourSpace>`), and Flame's EXRs never carry the OIIO keys, so every Flame clip read as `''`.
+
+**Write (2.0):** `write_sequence(colour_space=...)` writes the Writer's one resolved colour as `oiio:ColorSpace` and `openclip:ColorSpace` (and replaces a carried `autodeskColorSpace`), overriding the carried metadata's values; the XML tag gets the same value.
 
 **`oiio:ColorSpace` is not a safe round-trip vessel by itself on write.** Verified against the installed OIIO 3.1.15: its EXR plugin treats this key as an enum tied to its internal OCIO built-in-config registry, not a free string. On write, a recognized name gets silently *renamed* to its canonical form (`"ACEScg"` → `"lin_ap1_scene"`, `"Linear"` → `"lin_rec709_scene"`), and an unrecognized one — an arbitrary camera log profile name, a show-specific LUT name, exactly what requirements #2/#3 need to carry — is **silently dropped from the file entirely**, no error. So `_write_exr()` also stashes the value verbatim under `COLOUR_SPACE_BACKUP_KEY` (`"openclip:ColorSpace"`, a plain custom-namespaced attribute OIIO does not special-case) whenever `metadata` carries `COLOUR_SPACE_KEY` (`"oiio:ColorSpace"`). The Reader prefers the backup key and falls back to the plain key, so: this project's own write→read round trip is always lossless regardless of whether OIIO's registry recognizes the value, while a first-ever read of a third-party file (real Flame/camera EXRs that only ever set the conventional `oiio:ColorSpace`) still works via the fallback — best-effort, since we don't control how they wrote it.
 

@@ -87,8 +87,8 @@ class OpenClipColourSpaceTransform:
     `target_colour_space` is a dropdown, not free text -- same failure mode
     as `source` (a mistyped OCIO name) was possible before this. Options:
     ACEScg; "Same as input (via pipe)", which reads the real space name from
-    `same_as_input_colour_space` (wire an OpenClipReader's `colour_space`
-    output into it -- note that output is the verbatim tag embedded in the
+    `same_as_input_colour_space` (wire OpenClipClipInfo's `colour_space`
+    output into it -- note that value is the verbatim tag embedded in the
     source file/metadata, not cross-checked against this OCIO config, so an
     unresolvable name still surfaces as OCIO's own error at execute time);
     the same curated camera list as `source`; or Custom..., filling
@@ -116,7 +116,7 @@ class OpenClipColourSpaceTransform:
                     {
                         "forceInput": True,
                         "tooltip": (
-                            "Connect an OpenClipReader's colour_space output here. "
+                            "Connect OpenClipClipInfo's colour_space output here. "
                             "Used only when target_colour_space is 'Same as input (via pipe)'."
                         ),
                     },

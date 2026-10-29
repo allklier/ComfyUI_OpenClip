@@ -23,9 +23,9 @@ class OpenClipAOVReader:
     unrequested part (e.g. a large Cryptomatte) is never touched. Add one instance per
     AOV you actually want; a clip with no AOVs costs zero of these.
 
-    part_name is typed by hand against OpenClipReader's available_aovs output (copy the
+    part_name is typed by hand from the AOVS section of the reader's clip_report (copy the
     name from there) -- ComfyUI has no way for one node to populate another's widget
-    with a dropdown, so this is copy-and-retype, same as available_versions.
+    with a dropdown, so this is copy-and-retype.
 
     Output shape: a part with a single channel goes entirely to `matte`, `image` is
     None -- there's nothing meaningfully multi-channel to return. A part with >=2

@@ -1,6 +1,6 @@
 # tests/ — Test Suite
 
-Run with `pytest` (or `pytest -m "not slow"` to skip the one UHD test). No ComfyUI process is required — nodes are exercised by calling their Python methods directly. OpenImageIO and OpenColorIO **are** installed in the local dev environment, so the suite does real EXR/PNG and OCIO work (≈400 tests, ≈2 s). Not covered by anything here: a live ComfyUI server (executor, caching, socket wiring, node loading) and `web/openclip_reader.js`; those need the acceptance run on akflame5. `slow` is registered in `conftest.py` (`pytest_configure`), not `pyproject.toml`.
+Run with `pytest` (or `pytest -m "not slow"` to skip the one UHD test). No ComfyUI process is required — nodes are exercised by calling their Python methods directly. OpenImageIO and OpenColorIO **are** installed in the local dev environment, so the suite does real EXR/PNG and OCIO work (≈550 tests, ≈4 s). Not covered by anything here: a live ComfyUI server (executor, caching, socket wiring, node loading) and `web/openclip_reader.js`; those need the acceptance run on akflame5. `slow` is registered in `conftest.py` (`pytest_configure`), not `pyproject.toml`.
 
 ## Fixtures
 
@@ -91,9 +91,9 @@ AOV fixtures (`aov_pixels`, `aov_multipart_fixtures`, `write_multipart_exr`, `co
 
 | Test | What it checks |
 |---|---|
-| `test_outputs_match_openclip_reader` | Same `RETURN_TYPES`/`RETURN_NAMES` as `OpenClipReader` |
+| `test_outputs_match_openclip_reader` | Same 9 `RETURN_TYPES`/`RETURN_NAMES` as `OpenClipReader` (2.0), `IMAGE`/`MASK` at 0/1 |
 | `test_frame_token_forms` / `test_no_frame_token_raises` | `####`, `#####`, `%04d` and a dot in the folder name convert correctly; a path with no token raises |
-| `test_reads_range_from_disk_and_fills_outputs` | Range found on disk; pixels, matte, placeholders, folder/stem, header colour space and fps come out right |
+| `test_reads_range_from_disk_and_fills_outputs` | Range found on disk; pixels, matte, `clip_info` (folder/stem, header colour space, fps, padding, empty version/schema/timecode) and `clip_report` (no VERSIONS) come out right |
 | `test_frame_cap_and_explicit_range` | `frame_cap` and explicit start/end |
 | `test_colour_space_widget_overrides_header` | A non-blank widget wins over the header |
 | `test_aov_handle_feeds_openclip_aov_reader` | `aov_handle` → `OpenClipAOVReader("ViewLayer.Normal")` returns the exact normals |
@@ -160,8 +160,8 @@ System tests write to a temporary directory (`tmp_path` pytest fixture) and make
 | `test_round_trip_new_version` | Write `v001` then write `v002` to the same clip dir; read back `v002` and verify correct frames |
 | `test_exr_half_vs_float_precision` | Write same frame as half and float; float preserves more precision; both readable |
 | `test_exr_compression_variants` | Write ZIP, PIZ, DWAB; all produce valid EXRs that round-trip pixel data |
-| `test_reader_resolves_current_to_actual_version_name` | Reader's `version_name` output is the actual resolved name (e.g. `v003`), never the literal `"current"`; `available_versions` lists all versions with `  (current)` marking the right one |
-| `test_reader_resolves_explicit_version_name` | Requesting an explicit version name resolves `version_name` to that same name |
+| `test_reader_resolves_current_to_actual_version_name` | `clip_info["version_name"]` is the actual resolved name (e.g. `v003`), never the literal `"current"`; `clip_report`'s VERSIONS lists all versions with `(current)` and `← loaded` |
+| `test_reader_resolves_explicit_version_name` | Requesting an explicit version name resolves `clip_info["version_name"]` to that same name |
 | `test_write_next_version_defaults_to_v001_on_new_clip` | `version_name="next"` on a fresh clip resolves to `v001` |
 | `test_write_next_version_increments_past_existing` | Three successive writes with `version_name="next"` produce `v001`, `v002`, `v003` |
 | `test_write_overwrite_replaces_version_and_deletes_stale_frames` | `overwrite=True` on an existing `version_name` deletes that version's old frame files before writing fewer new ones — no orphaned stale frames remain |
@@ -171,9 +171,28 @@ System tests write to a temporary directory (`tmp_path` pytest fixture) and make
 | `test_writer_aov_png_raises` | Writer-level `ValueError` when a non-empty `aov_chain` is connected with `file_format="PNG"` |
 | `test_writer_duplicate_aov_name_raises` | Two `OpenClipAOVWriter` entries sharing a name raise when chained |
 | `test_aov_writer_requires_exactly_one_of_image_matte` | `OpenClipAOVWriter` raises if neither or both of `image`/`matte` are connected |
-| `test_colour_space_round_trips_through_writer_and_reader` | `colour_space` survives a full Writer→Reader round trip for a camera-log-style value, via `CLIP_METADATA` |
-| `test_colour_space_empty_when_not_carried` | `colour_space` is `""` when no `CLIP_METADATA` was wired |
+| `test_colour_space_round_trips_through_writer_and_reader` | A camera-log-style colour survives a full Writer→Reader round trip via `clip_info` |
+| `test_colour_space_defaults_to_rec709_video_when_not_carried` | 2.0: no colour anywhere → the Writer writes `Rec.709 video` and the Reader reads it back (was `""`) |
 | `test_autodesk_example` (12 cases), `test_autodesk_expectations_cover_every_example`, `test_autodesk_movie_clips_still_parse` | Every clip in `tests/fixtures/autodesk_examples/` (Flame's `/opt/Autodesk/openclip_examples/`, copied with media, **gitignored** — not ours to redistribute) reads the expected frames or raises its specific clear error. Skipped when the folder is absent; to populate it, `rsync -a akflame5:/opt/Autodesk/openclip_examples/ tests/fixtures/autodesk_examples/` |
+
+---
+
+## 2.0: issue #7 and `clip_info` — `test_clip_info.py`
+
+Uses `_flame_clip()`, a synthetic Flame-style clip modelled on the real repro clip (schema 9, 24000/1001, 6-digit range path, XML `colourSpace`, EXRs with `autodeskColorSpace` and `smpte:TimeCode`, file named `woods walk .clip` with the trailing space). `named_result()` (conftest) maps a node's result tuple to `{output name: value}` plus `info.<key>` for `clip_info`.
+
+| Test group | What it checks |
+|---|---|
+| `test_timecode_*`, `test_smpte_bcd_matches_flames_own_exr_value` | `lib/timecode.py`: NDF and drop-frame parse/format (incl. a round trip over 0–40000 ticks), bad text, Flame's own BCD value for 10:44:22:06, DF flag, none above 30 fps |
+| `test_parse_*`, `test_generate_writes_the_versions_start_timecode` | Feed `startTimecode`/`colourSpace` parsed; names with spaces kept; blank name → stem; `generate()` writes ticks and `DF` |
+| `test_issue7_*` | **One regression test per issue-#7 bug** (each was reproduced on 1.1.1 with the old interface): new clip keeps `nbTicks`; append keeps it on the new feed (also without `clip_info`); per-frame EXR `smpte:TimeCode`; Reader colour from XML; colour tag kept Reader→Writer; trailing-space name appends to the source (no `woods walk.clip`); mismatch message suggests a new `clip_name` |
+| `test_append_*`, `test_invalid_start_timecode_*`, `test_rates_above_30_*` | The three append rules (mismatch errors also with `overwrite`, nothing on disk changes; same real TC → warning; both 00:00:00:00 → error), a clip with no `startTimecode` counts as 00:00:00:00, bad timecode text writes nothing, 50 fps gets the XML timecode but no EXR one |
+| `test_writer_*`, `test_version_name_is_never_taken_from_clip_info`, `test_clip_info_with_an_unwritable_schema_version_falls_back_to_6`, `test_clip_name_and_path_still_required_without_clip_info` | Auto fields: defaults without `clip_info`, every value from `clip_info`, every widget overriding it; sockets and auto defaults of `INPUT_TYPES`; `"next"` gives Flame's `v0` → `v1` |
+| `test_destination_that_is_the_source_file_by_another_spelling_*`, `test_names_with_spaces_typed_by_hand_*`, `test_name_rules_still_apply_to_clip_info_names` | Exact-file append through a symlinked folder; untrimmed typed names; `_check_name_component` also guards `clip_info` names |
+| `test_reader_*`, `test_header_colour_lookup_order`, `test_clip_report_*` | Reader outputs and `clip_info` values; colour order XML → `autodeskColorSpace` → `openclip:ColorSpace` → `oiio:ColorSpace`; exact `clip_report` text and `ui` payload; AOVs one per line |
+| `test_clip_info_node_*`, `test_clip_info_colour_feeds_colour_space_transform_same_as_input` | `OpenClipClipInfo` outputs; its `colour_space` drives the Colour Space Transform's "Same as input (via pipe)" |
+| `test_exr_sequence_clip_info_drives_a_new_clip` | EXR Sequence Reader `clip_info` → Writer: folder/stem, padding 5, schema 6, TC 0, header colour |
+| `test_real_flame_clip_round_trip` | Against `testclips/clip_1/alpha_test.clip` (gitignored; copied with its `<path>` rewritten; skips when absent): TC 10:44:22:05, colour, padding 6; new clip and append both get `nbTicks` 927893 and per-frame EXR TC; the original feed is unchanged |
 
 ---
 
@@ -232,7 +251,7 @@ Contract being locked in: **fail loudly and name the file; never return a plausi
 | `test_discovery_*`, `test_explicit_start_only_and_end_only_...`, `test_start_after_end_raises`, `test_frame_cap_zero_raises_...` | Disk discovery (other stems/extensions ignored, numeric sort, regex metacharacters in stem), half-open ranges, `frame_cap=0` characterisation |
 | `test_blank_layer_on_a_blender_...`, `test_unknown_layer_...`, `test_layer_widget_is_stripped`, `test_relative_sequence_path_...`, `test_printf_style_path_is_accepted`, `test_header_colour_space_...`, `test_metadata_output_...`, `test_fps_output_...`, `test_ui_payload_...` | Layer handling, relative path via `folder_paths`, outputs |
 | `test_is_changed_*` (ExrSequenceReader) | Re-rendered first frame detected; linked path falls back to `_LAST_READ_PLAN` |
-| `test_exr_reader_outputs_wire_into_writer_and_round_trip_via_openclip_reader` | ExrSequenceReader → AOVReader → AOVWriter → OpenClipWriter (metadata, colour_space, start_frame, clip_name wired) → OpenClipReader → AOVReader: pixels, mask, AOV bit-exact |
+| `test_exr_reader_outputs_wire_into_writer_and_round_trip_via_openclip_reader` | ExrSequenceReader → AOVReader → AOVWriter → OpenClipWriter (only `clip_info` wired) → OpenClipReader → AOVReader: pixels, mask, AOV bit-exact |
 | `test_cst_*` | `OpenClipColourSpaceTransform`: dropdown layout, whitespace stripping, whitespace-only pipe value, pipe ignored unless target is "Same as input", identity on same space, unknown space / unreadable config raise `PyOpenColorIO.Exception`, HDR/negative not clamped, batch/non-square/float32/input untouched, mask returned as-is, label values unique |
 | `test_cst_every_dropdown_label_resolves_in_the_real_flame_config` | Runs only where Flame's ACES 2.0 config exists (skipped locally, e.g. on akflame5 it would run): every `CAMERA_COLOUR_SPACES` value exists in that config and converts to ACEScg |
 
@@ -242,13 +261,13 @@ Contract being locked in: **fail loudly and name the file; never return a plausi
 |---|---|
 | `test_resolve_destination_*`, `test_normalize_to_folder`, `test_writer_dotdot_...`, `test_writer_suffix_pattern_...` | `clip_filename` tokens: suffixes, `..`, repeated tokens, case-insensitive `.clip`, trailing/double slashes, all error cases, tokenless absolute path |
 | `test_fps_label_from_float_accepts/rejects`, `..._tolerance_is_adjustable`, `test_fps_to_rational_...`, `test_writer_to_reader_fps_round_trip` | fps matching incl. rational NTSC values; rejects 0/negative/inf/off-grid values; `23.98` is currently *rejected* (characterised) |
-| `test_writer_colour_space_*` | Wired `colour_space` input lands in the XML, default is the Flame display name, independent of the EXR-header pipe, second version's value is not mismatch-checked (characterised) |
-| `test_metadata_*`, `test_writer_format_options_beat_carried_metadata`, `test_unwritable_metadata_values_are_skipped_not_fatal` | `CLIP_METADATA` carry-through: scalars, every frame, writer options win, un-settable values skipped, PNG unaffected |
+| `test_writer_colour_space_*` | `colour_space` lands in the XML, default is `Rec.709 video`, the Writer's colour wins over a carried header colour in XML and EXR alike (2.0: one colour, not two pipes), second version's value is not mismatch-checked (characterised) |
+| `test_metadata_*`, `test_writer_format_options_beat_carried_metadata`, `test_unwritable_metadata_values_are_skipped_not_fatal` | Header metadata carry-through (`clip_info["metadata"]`, was `CLIP_METADATA`): scalars, every frame, writer options win, un-settable values skipped, PNG unaffected |
 | `test_version_collision_error_message_...`, `test_collision_leaves_existing_...`, `test_overwrite_*`, `test_next_*`, `test_include_version_in_filename_and_overwrite_...` | Collision message contents (banner, version, clip path, three fixes), nothing modified on collision, overwrite scoped to one version (incl. Flat layout with versioned filenames), `next` with non-numbered / 4-digit-padded versions |
 | `test_writer_rejects_names_that_leave_their_folder_and_writes_nothing`, `test_writer_allows_dots_inside_a_name`, `test_overwrite_with_glob_characters_in_the_name_leaves_other_clips_frames_alone` | Security fixes from the 2026-10-28 scan triage: `clip_name`/`version_name` with `/`, `\`, `.`, `..` raise and write nothing (`shot..v2` is fine); overwriting `sh*` no longer deletes `shotB`'s frames. All fail with the fixes switched off |
 | `test_publish_*` | Publish without workflow info; sidecar + reference survive a later non-publish version |
 | `test_reader_auto_remaps_...`, `test_reader_explicit_path_remap`, `test_reader_wrong_explicit_remap_fails_loudly` | Foreign absolute media roots through the Reader node |
-| `test_new_clip_*`, `test_invalid_format_version_*`, `test_append_*`, `test_overwrite_replaces_feed_and_version_in_place`, `test_wired_format_version_*`, `test_matching_format_version_*`, `test_format_version_input_is_optional_and_last` | Issue #4: new clip defaults to schema 6 / explicit value; invalid value raises before disk; appending keeps the schema and every Flame element (`FLAME_CLIP` fixture modelled on a real v6 corpus clip, incl. audio track and double-encoded "AutodeskÂ®") and adds exactly one feed + one version; overwrite replaces in place; differing wired value warns and keeps the file's |
+| `test_new_clip_*`, `test_invalid_format_version_*`, `test_append_*`, `test_overwrite_replaces_feed_and_version_in_place`, `test_wired_format_version_*`, `test_matching_format_version_*`, `test_format_version_is_a_widget_defaulting_to_auto`, `test_writer_start_frame_defaults_to_auto_then_flames_1` | Issue #4: new clip defaults to schema 6 / explicit value; invalid value raises before disk; appending keeps the schema and every Flame element (`FLAME_CLIP` fixture modelled on a real v6 corpus clip, incl. audio track and double-encoded "AutodeskÂ®") and adds exactly one feed + one version; overwrite replaces in place; differing wired value warns and keeps the file's |
 | `test_append_to_legacy_standard_clip_keeps_the_old_layout`, `test_overwrite_with_version_in_filename_also_removes_old_dot_named_frames` | Old-layout clips stay appendable (new version lands in `versions/<v>/`, both versions readable); overwrite with the toggle on also clears `<clip>.<version>.*` frames from before the separator change |
 | `test_reader_reads_a_static_still_clip`, `test_reader_uses_only_the_first_span_...`, `test_parse_generate_round_trip_keeps_a_multi_span_version`, `test_reader_available_versions_text_...` | Static-image clip end to end, multi-span behaviour (Reader reads `spans[0]` only), version list text |
 
