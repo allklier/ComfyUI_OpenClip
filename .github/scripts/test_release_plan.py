@@ -169,7 +169,16 @@ def test_gate_first_release_is_not_a_patch():
 def test_gate_good_result_gives_the_verification_line():
     line = gate("v2.0.0", TAGS_2, COMMIT, result())
     assert line == ("Full tier + live ComfyUI (maintainer run 2026-10-29T18:00:00Z, caae91f): ✔ pytest 776 passed "
-                    "(real Flame clips 158), acceptance 34/34, without OCIO 6/6")
+                    "(real Flame clips 158), acceptance 34/34, without OCIO 6/6, Flame checks not run")
+
+
+def test_gate_line_reports_flame_checks_when_they_ran_but_does_not_require_them():
+    doc = result()
+    doc["results"]["flame_checks"] = {"passed": 30, "failed": 0, "failed_tests": [], "exit_code": 0,
+                                      "flame_version": "2027.2.pr251"}
+    assert gate("v2.0.0", TAGS_2, COMMIT, doc).endswith("without OCIO 6/6, Flame 2027.2.pr251 checks 30/30")
+    doc["results"]["flame_checks"] = {"status": "not run", "reason": "Flame bridge not running"}
+    assert gate("v2.0.0", TAGS_2, COMMIT, doc).endswith(", Flame checks not run")
 
 
 def test_gate_accepts_a_short_commit():

@@ -19,14 +19,19 @@
 #   3. starts the private ComfyUI (acceptance/start_private_comfyui.sh: port 8199, --cpu), runs
 #      acceptance/run_acceptance.py (--flame-clip "$FLAME_CLIP" if set, else a synthetic clip),
 #      stops it, then the same with PyOpenColorIO blocked (noocio);
-#   4. writes openclip-test-<ref>.json: ref, commit, version, per-tier counts, PASS/FAIL. No host
+#   4. Flame checks, when the flame-test-bridge hook is running in Flame on this machine (fresh
+#      heartbeat in $FLAME_BRIDGE_RUN): writes test clips with this ref's Writer and has Flame
+#      import them, add its own version, and report what it sees (flame-test-bridge repo,
+#      examples/openclip_flame_checks.py). Otherwise recorded as "not run";
+#   5. writes openclip-test-<ref>.json: ref, commit, version, per-tier counts, PASS/FAIL. No host
 #      or user names.
 # Environment: OC_ACCEPT (default ~/oc_accept), COMFY_PY (default the ComfyUI env's python),
 # PYTEST_PKGS (default $OC_ACCEPT/pytest_pkgs, put on PYTHONPATH when pytest isn't in COMFY_PY),
-# FLAME_CLIP, OC_FLAME_CLIPS_DIR, AUTODESK_EXAMPLES, OPENCLIP_FLAME_CLIPS (forwarded by --host).
+# FLAME_CLIP, OC_FLAME_CLIPS_DIR, AUTODESK_EXAMPLES, OPENCLIP_FLAME_CLIPS (forwarded by --host),
+# FLAME_BRIDGE (default ~/flame-test-bridge), FLAME_BRIDGE_RUN (default ~/flame-test-bridge-run).
 set -uo pipefail
 die() { echo "maintainer_test: $*" >&2; exit 2; }
-usage() { sed -n '2,30p' "$0" >&2; exit 2; }
+usage() { sed -n '2,35p' "$0" >&2; exit 2; }
 
 REF= HOST= OUT=$PWD ARCHIVE= COMMIT=
 while [ $# -gt 0 ]; do
@@ -55,7 +60,8 @@ if [ -z "$ARCHIVE" ]; then
     ssh "$HOST" 'mkdir -p "${OC_ACCEPT:-$HOME/oc_accept}/mt"' || die "ssh $HOST failed"
     scp -q "$TMP/pack.tar" "$HOST:oc_accept/mt/pack.tar" || die "scp failed"
     FWD=""
-    for v in OC_ACCEPT COMFY_PY PYTEST_PKGS FLAME_CLIP OC_FLAME_CLIPS_DIR AUTODESK_EXAMPLES OPENCLIP_FLAME_CLIPS; do
+    for v in OC_ACCEPT COMFY_PY PYTEST_PKGS FLAME_CLIP OC_FLAME_CLIPS_DIR AUTODESK_EXAMPLES OPENCLIP_FLAME_CLIPS \
+             FLAME_BRIDGE FLAME_BRIDGE_RUN; do
       [ -n "${!v:-}" ] && FWD+="$v=$(printf '%q' "${!v}") "
     done
     # The script inside the archive runs, so the remote side is the version under test.
@@ -132,9 +138,34 @@ run_acceptance() {  # <normal|noocio>
 run_acceptance normal; ACC_RC=$?
 run_acceptance noocio; NOOCIO_RC=$?
 
+FLAME_BRIDGE=${FLAME_BRIDGE:-$HOME/flame-test-bridge}
+FLAME_BRIDGE_RUN=${FLAME_BRIDGE_RUN:-$HOME/flame-test-bridge-run}
+FLAME_RC= FLAME_SKIP=
+if [ ! -f "$FLAME_BRIDGE/examples/openclip_flame_checks.py" ]; then
+  FLAME_SKIP="flame-test-bridge not installed"
+elif ! python3 -c 'import json, sys, time; sys.exit(time.time() - json.load(open(sys.argv[1]))["time"] > 30)' \
+       "$FLAME_BRIDGE_RUN/heartbeat.json" 2>/dev/null; then
+  FLAME_SKIP="Flame bridge not running (no fresh heartbeat)"
+else
+  echo "== Flame checks"
+  # Clips go under the bridge's work folder: the only place it lets Flame import from.
+  FW="$FLAME_BRIDGE_RUN/work/openclip-mt-$SAFE_REF"
+  rm -rf "$FW" && mkdir -p "$FW"
+  if (cd "$FLAME_BRIDGE" && "$COMFY_PY" -I examples/openclip_make_clips.py --openclip-src "$MT/src" \
+        --out "$FW/clips" ${FLAME_CLIP:+--flame-clip "$FLAME_CLIP"}) >"$LOGS/flame-make-clips.log" 2>&1; then
+    (cd "$FLAME_BRIDGE" && python3 examples/openclip_flame_checks.py --manifest "$FW/clips/manifest.json" \
+       --json "$LOGS/flame-checks.json") >"$LOGS/flame-checks.log" 2>&1
+    FLAME_RC=$?
+  else
+    FLAME_RC=2
+  fi
+  tail -1 "$LOGS/flame-checks.log" 2>/dev/null || tail -3 "$LOGS/flame-make-clips.log"
+fi
+[ -n "$FLAME_SKIP" ] && echo "== Flame checks: not run ($FLAME_SKIP)"
+
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' "$TESTS/pyproject.toml")
 LOGS="$LOGS" REF="$REF" COMMIT="$COMMIT" VERSION="$VERSION" PYTEST_RC=$PYTEST_RC ACC_RC=$ACC_RC NOOCIO_RC=$NOOCIO_RC \
-FLAME_CLIP_SET=${FLAME_CLIP:+1} RESULT="$OUT/$RESULT_NAME" "$COMFY_PY" -I - <<'EOF'
+FLAME_RC="$FLAME_RC" FLAME_SKIP="$FLAME_SKIP" FLAME_BRIDGE_RUN="$FLAME_BRIDGE_RUN" FLAME_CLIP_SET=${FLAME_CLIP:+1} RESULT="$OUT/$RESULT_NAME" "$COMFY_PY" -I - <<'EOF'
 import datetime, json, os, platform, xml.etree.ElementTree as ET
 e = os.environ
 
@@ -171,7 +202,25 @@ def acceptance(mode, rc):
 py = junit(os.path.join(e["LOGS"], "junit-full.xml")); py["exit_code"] = int(e["PYTEST_RC"])
 res = {"pytest_full": py, "acceptance_normal": acceptance("normal", int(e["ACC_RC"])),
        "acceptance_noocio": acceptance("noocio", int(e["NOOCIO_RC"]))}
-ok = all(r["exit_code"] == 0 and r["failed"] == 0 and r["passed"] > 0 and "error" not in r for r in res.values())
+def flame_checks():
+    if e["FLAME_SKIP"]:
+        return {"status": "not run", "reason": e["FLAME_SKIP"]}
+    try:
+        rows = json.load(open(os.path.join(e["LOGS"], "flame-checks.json")))["checks"]
+    except (OSError, ValueError, KeyError) as x:
+        return {"passed": 0, "failed": 0, "exit_code": int(e["FLAME_RC"]), "error": "no results (%s)" % type(x).__name__}
+    bad = [r["check"] for r in rows if r["result"] == "FAIL"]
+    try:
+        flame = json.load(open(os.path.join(e["FLAME_BRIDGE_RUN"], "heartbeat.json")))["flame_version"]
+    except (OSError, ValueError, KeyError):
+        flame = "?"
+    return {"passed": sum(r["result"] == "PASS" for r in rows), "failed": len(bad), "failed_tests": bad,
+            "exit_code": int(e["FLAME_RC"]), "flame_version": flame}
+
+# Flame checks count towards overall only when they ran (they need Flame running with the bridge).
+res["flame_checks"] = flame_checks()
+ok = all(r["exit_code"] == 0 and r["failed"] == 0 and r["passed"] > 0 and "error" not in r
+         for r in res.values() if r.get("status") != "not run")
 import OpenImageIO, sys
 doc = {
     "schema": 1, "ref": e["REF"], "commit": e["COMMIT"], "version": e["VERSION"], "tier": "full",
@@ -185,10 +234,12 @@ doc = {
 with open(e["RESULT"], "w") as f:
     json.dump(doc, f, indent=2); f.write("\n")
 print("%s: %s (pytest %d passed/%d failed/%d skipped/%d xfailed, real-clip tests %d passed; "
-      "acceptance %d/%d, noocio %d/%d)" % (e["RESULT"], doc["overall"], py["passed"], py["failed"], py["skipped"],
+      "acceptance %d/%d, noocio %d/%d, Flame %s)" % (e["RESULT"], doc["overall"], py["passed"], py["failed"], py["skipped"],
       py["xfailed"], py["real_clip_tests"]["passed"], res["acceptance_normal"]["passed"],
       res["acceptance_normal"]["passed"] + res["acceptance_normal"]["failed"], res["acceptance_noocio"]["passed"],
-      res["acceptance_noocio"]["passed"] + res["acceptance_noocio"]["failed"]))
+      res["acceptance_noocio"]["passed"] + res["acceptance_noocio"]["failed"],
+      "not run" if res["flame_checks"].get("status") else "%d/%d" % (res["flame_checks"]["passed"],
+      res["flame_checks"]["passed"] + res["flame_checks"]["failed"])))
 EOF
 echo "logs: $LOGS"
 grep -q '"overall": "PASS"' "$OUT/$RESULT_NAME" 2>/dev/null || exit 1

@@ -191,10 +191,17 @@ def gate(tag: str, tags: list[str], tag_commit: str, result: dict | None) -> str
 
     py = ("results", "pytest_full")
     acc, noocio = ("results", "acceptance_normal"), ("results", "acceptance_noocio")
+    # Flame checks need Flame running with the flame-test-bridge hook; reported, not required.
+    fl = result["results"].get("flame_checks")
+    if isinstance(fl, dict) and isinstance(fl.get("passed"), int) and isinstance(fl.get("failed"), int):
+        flame = f", Flame {fl.get('flame_version', '?')} checks {fl['passed']}/{fl['passed'] + fl['failed']}"
+    else:
+        flame = ", Flame checks not run"
     return (f"Full tier + live ComfyUI (maintainer run {result.get('timestamp', '?')}, {commit[:7]}): ✔ "
             f"pytest {count(*py, 'passed')} passed (real Flame clips {real}), "
             f"acceptance {count(*acc, 'passed')}/{count(*acc, 'passed') + count(*acc, 'failed')}, "
-            f"without OCIO {count(*noocio, 'passed')}/{count(*noocio, 'passed') + count(*noocio, 'failed')}")
+            f"without OCIO {count(*noocio, 'passed')}/{count(*noocio, 'passed') + count(*noocio, 'failed')}"
+            f"{flame}")
 
 
 def promote(body: str, *verifications: str) -> str:
