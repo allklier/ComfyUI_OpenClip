@@ -548,6 +548,7 @@ def real_flame_clip(tmp_path):
     return clip
 
 
+@pytest.mark.flame_clips
 def test_real_flame_clip_round_trip(real_flame_clip):
     flat = lambda el: etree.tostring(etree.fromstring(etree.tostring(el), etree.XMLParser(remove_blank_text=True)))
     original = flat(_feeds(real_flame_clip)[0])

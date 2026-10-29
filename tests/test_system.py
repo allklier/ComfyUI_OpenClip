@@ -893,12 +893,14 @@ AUTODESK_EXPECTED = {
 }
 
 
+@pytest.mark.flame_clips
 def test_autodesk_expectations_cover_every_example():
     if not AUTODESK_DIR.is_dir():
         pytest.skip("tests/fixtures/autodesk_examples/ not present (gitignored)")
     assert sorted(p.name for p in AUTODESK_DIR.glob("*.clip")) == sorted(AUTODESK_EXPECTED)
 
 
+@pytest.mark.flame_clips
 @pytest.mark.parametrize("name", sorted(AUTODESK_EXPECTED))
 def test_autodesk_example(name):
     clip = AUTODESK_DIR / name
@@ -920,6 +922,7 @@ def test_autodesk_example(name):
     assert r["fps"] == 24.0  # no <editRate> -> default
 
 
+@pytest.mark.flame_clips
 def test_autodesk_movie_clips_still_parse():
     clip = AUTODESK_DIR / "One_Track.clip"
     if not clip.exists():
