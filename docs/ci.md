@@ -30,11 +30,13 @@ scripts only through environment variables.
 - No ComfyUI is installed: the tests call the node classes directly
   (`tests/CLAUDE.md`). The checkout goes into a folder named
   `ComfyUI_OpenClip` because the tests import the repo under that package name.
-- Tests that need Autodesk's example clips or the real Flame clip in
-  `testclips/` (both gitignored, not redistributable) are skipped on CI; a
-  synthetic Flame-style clip covers the same logic (`tests/test_clip_info.py`).
-- Not covered: a live ComfyUI server, the frontend JS, Flame itself. Those
-  are the manual "Acceptance" and "Flame" lines in the release notes.
+- CI runs the **smoke tier** (`pytest` with no options = `--tier smoke`): unit
+  tests plus the synthetic Flame-like boundary cases (`tests/test_flame_like.py`).
+  Tests marked `flame_clips` (real Flame/Autodesk clips, gitignored, not
+  redistributable) are skipped with "full tier only"; with `--tier full` they
+  also skip per clip when the clips are absent, so the workflow needs no change.
+- Not covered on CI: the full tier, a live ComfyUI server, the frontend JS, Flame
+  itself. See "Test tiers and the maintainer run" below.
 
 ## Security scan (`security-scan.yml`)
 
@@ -125,6 +127,49 @@ It clears the pre-release flag, adds the line to the Verification list and
 sets `**Status: FULLY TESTED**`. It refuses releases whose notes have no
 Verification block written by `release.yml` (older, hand-written releases).
 The "– not run" lines stay as they are; the added line records what was done.
+
+## Test tiers and the maintainer run
+
+| Tier | What | Where |
+|---|---|---|
+| smoke | unit tests + synthetic Flame-like cases | `tests.yml`, every push/PR/release (≈4 s) |
+| full | smoke + real-clip fidelity (`--tier full`) + live ComfyUI acceptance, normal and without OCIO | `scripts/maintainer_test.sh`, on the ComfyUI test machine |
+| manual | 5 steps in Flame | `docs/FLAME_TEST.md` |
+
+Details and the reasons: `tests/CLAUDE.md` "Tiers".
+
+### Maintainer run
+
+```sh
+# from a checkout on the development machine; runs on the test host over ssh
+FLAME_CLIP=<a real Flame .clip on that host> \
+OPENCLIP_FLAME_CLIPS=<more .clip files or folders there, ':'-separated> \
+scripts/maintainer_test.sh v2.0.0 --host <test host>
+# or on the test host itself, from a checkout there
+scripts/maintainer_test.sh v2.0.0
+```
+
+It exports the ref with `git archive`, installs it into the private ComfyUI base
+(`~/oc_accept/base/custom_nodes/ComfyUI_OpenClip`; the shared ComfyUI install is only read),
+runs `pytest --tier full`, then starts the private ComfyUI (`acceptance/start_private_comfyui.sh`,
+port 8199, `--cpu`) and runs `acceptance/run_acceptance.py` normally and with OCIO blocked, and
+writes `openclip-test-<ref>.json` (ref, commit, version, per-tier counts incl. how many
+real-clip tests ran, `overall` PASS/FAIL; no host or user names). With `--host` the file is
+copied back to `--out` (default: the current folder). Logs stay in `~/oc_accept/mt/logs/` on
+the test host. Real clips there: `~/oc_accept/flame_clips/` (the planned set, `tests/flame_clips.md`),
+`/opt/Autodesk/openclip_examples`, and `$OPENCLIP_FLAME_CLIPS`.
+
+### Gating promote on the result file (PROPOSAL, not wired)
+
+`promote.yml` does not read the result file yet. Proposed, mirroring LTX Alpha Gen's `promote.sh`:
+
+1. After the maintainer run: `gh release upload <tag> openclip-test-<tag>.json`.
+2. `promote.yml` downloads it and refuses unless `ref` = the tag, `commit` = the tag's commit,
+   `tier` = `full`, `overall` = `PASS`, and `results.pytest_full.real_clip_tests.passed` > 0
+   (so a run without any real clip can't promote).
+3. It then writes the Verification line from the file (counts, timestamp) instead of the
+   free-text `verification` input, and keeps the free-text input for the Flame line
+   (`docs/FLAME_TEST.md`), which no machine can produce.
 
 ## What is verified, and what isn't
 

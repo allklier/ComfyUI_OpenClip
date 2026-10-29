@@ -1,6 +1,23 @@
 # tests/ — Test Suite
 
-Run with `pytest` (or `pytest -m "not slow"` to skip the one UHD test). No ComfyUI process is required — nodes are exercised by calling their Python methods directly. OpenImageIO and OpenColorIO **are** installed in the local dev environment, so the suite does real EXR/PNG and OCIO work (≈550 tests, ≈4 s). Not covered by anything here: a live ComfyUI server (executor, caching, socket wiring, node loading) and `web/openclip_reader.js`; those need the acceptance run on akflame5. `slow` is registered in `conftest.py` (`pytest_configure`), not `pyproject.toml`.
+Run with `pytest` (or `pytest -m "not slow"` to skip the one UHD test). No ComfyUI process is required — nodes are exercised by calling their Python methods directly. OpenImageIO and OpenColorIO **are** installed in the local dev environment, so the suite does real EXR/PNG and OCIO work. Markers (`slow`, `flame_clips`) and the `--tier` option are registered in `conftest.py`, not `pyproject.toml`.
+
+## Tiers (2.0, 2026-10-29)
+
+**Why:** up to 1.1.1 every test checked self-consistency (our Writer ↔ our Reader). Issue #7's three bugs (lost start timecode, empty colour tag, trimmed name) passed all of them, because the Writer and Reader agreed with each other and nothing compared the output with what Flame wrote. The acceptance run tested ComfyUI behaviour, not Flame compatibility. The tiers below add comparisons against the *source* clip, from synthetic Flame-shaped clips (always) and real Flame exports (when present). Modelled on LTX Alpha Gen's tiers (decisions 67/77 there).
+
+| Tier | Contents | Command | Where / when |
+|---|---|---|---|
+| **smoke** | unit tests + synthetic Flame-like boundary cases (`test_flame_like.py`); real-clip tests skip ("full tier only") | `pytest` (= `pytest --tier smoke`), ≈700 tests, ≈4 s | CI (`tests.yml`) on every push/PR/release; locally after every change |
+| **full** | smoke + real-clip fidelity (`test_flame_clips.py`, Autodesk examples, `testclips/`) — skip per clip when absent | `pytest --tier full` (only the real clips: `pytest --tier full -m flame_clips`) | maintainer, before promotion |
+| **full + live** | full + automated acceptance on a live ComfyUI (normal and without OCIO) → `openclip-test-<ref>.json` | `scripts/maintainer_test.sh <ref> --host akflame5` (see `docs/ci.md`) | maintainer, before promotion |
+| **manual Flame check** | 5 steps in Flame | `docs/FLAME_TEST.md` | user/tester, as needed |
+
+**Synthetic vs real split.** The synthetic cases (`flame_fixtures.py`) are built from the structure of real exports (the repro clip, the v6 corpus clip) and cover every boundary we know of, on every push. What they cannot prove is that Flame writes those shapes: drop-frame (`dropMode` spelling, `nbTicks` meaning) and non-ASCII names are assumptions there. The real clips answer that, and run the *same* checks (`flame_roundtrip.py`), so a real clip can be added without writing a test. Real clips are never in git (`tests/fixtures/flame/` gitignored; `tests/flame_clips.md` is the manifest of what to export).
+
+**Comparison helper** (`flame_compare.py`): reads the fields Flame uses from the picture track (`feed_fields`), derives what the Writer must write from the *source* (`expected_feed`), and reports differences as readable strings (`new_clip_diffs`, `append_diffs`, `exr_frame_diffs`, `pixel_diffs`). Its timecode label/BCD code and frame-rate table are deliberately separate implementations from `lib/timecode.py`/`lib/openclip_xml.py`, so a shared bug can't agree with itself. Two guard tests make sure the helper does catch a lost `nbTicks` and a changed original element.
+
+Not covered by anything here: `web/openclip_reader.js` in a browser, and Flame itself (`docs/FLAME_TEST.md`).
 
 ## Fixtures
 
@@ -173,7 +190,7 @@ System tests write to a temporary directory (`tmp_path` pytest fixture) and make
 | `test_aov_writer_requires_exactly_one_of_image_matte` | `OpenClipAOVWriter` raises if neither or both of `image`/`matte` are connected |
 | `test_colour_space_round_trips_through_writer_and_reader` | A camera-log-style colour survives a full Writer→Reader round trip via `clip_info` |
 | `test_colour_space_defaults_to_rec709_video_when_not_carried` | 2.0: no colour anywhere → the Writer writes `Rec.709 video` and the Reader reads it back (was `""`) |
-| `test_autodesk_example` (12 cases), `test_autodesk_expectations_cover_every_example`, `test_autodesk_movie_clips_still_parse` | Every clip in `tests/fixtures/autodesk_examples/` (Flame's `/opt/Autodesk/openclip_examples/`, copied with media, **gitignored** — not ours to redistribute) reads the expected frames or raises its specific clear error. Skipped when the folder is absent; to populate it, `rsync -a akflame5:/opt/Autodesk/openclip_examples/ tests/fixtures/autodesk_examples/` |
+| `test_autodesk_example` (12 cases), `test_autodesk_expectations_cover_every_example`, `test_autodesk_movie_clips_still_parse` | Every clip in `tests/fixtures/autodesk_examples/` (Flame's `/opt/Autodesk/openclip_examples/`, copied with media, **gitignored** — not ours to redistribute) reads the expected frames or raises its specific clear error. Full tier only (`flame_clips`); skipped when the folder is absent; to populate it, `rsync -a akflame5:/opt/Autodesk/openclip_examples/ tests/fixtures/autodesk_examples/` |
 
 ---
 
@@ -196,9 +213,34 @@ Uses `_flame_clip()`, a synthetic Flame-style clip modelled on the real repro cl
 
 ---
 
+## Flame fidelity — `test_flame_like.py` (smoke) and `test_flame_clips.py` (full, 2026-10-29)
+
+Helpers (not test modules): `flame_compare.py` (fields, expectations, diffs, timecode oracle), `flame_fixtures.py` (`FlameLike` case + `build()`: tab-indented Flame-shaped XML, hex uids, track `<name>`, full `<storageFormat>`, `recordTimecode`, absolute `<name>_<version>.[first-last].exr` paths, `<versions>` with Flame userData; EXRs written with plain OIIO carrying PIZ, `autodeskColorSpace`, `framesPerSecond`, per-frame `smpte:TimeCode`), `flame_roundtrip.py` (`new_clip_check`, `append_check`: Reader → Writer with `clip_info` wired, all fields on auto; bit depth set to the source's, `MASK` wired when the source has alpha).
+
+### `test_flame_like.py` (35 cases × new clip + append, + append-to-an-append for 6)
+
+| Case group | Cases |
+|---|---|
+| timecode / rate | `tc_0100` (23.976 @ 01:00:00:00), `tc_104422_v01` (10:44:22:05, Flame 2027 `v01` numbering), `tc_drop_2997` (01:00:00;00), `tc_drop_2997_odd_minute` (00:01:00;02), `tc_drop_5994` (no EXR TC above 30), `tc_pal` (25 @ 10:00:00:00), `tc_numbered_86400` (frames from TC, padding 8), `tc_none` (no `<startTimecode>`), `rate_23976_decimal`, `rate_25_decimal_v6` (text `<editRate>`, as the v6 corpus) |
+| numbering | `start_0`, `start_1`, `start_1001` (padding 4), `pad_6` |
+| names | `name_trailing_space` (`woods walk `), `name_leading_space_non_ascii` (` lead café`) |
+| versions | `versions_v0_v1` (→ v2), `versions_v001` (→ v004), `no_versions_block` |
+| colour | ACEScg, Rec.709 video, Rec.1886 Rec.709 - Display, Raw, Matte, missing (→ Writer default), EXR-only `autodeskColorSpace`, `aces_alpha_float` (ACEScg, 32-bit, RGBA) |
+| structure | audio track after / before the video track, schemas 5–9 |
+
+Regression tests for the two bugs the first maintainer run found on real clips (2026-10-29): `test_aovs_from_a_flame_source_round_trip` (both layouts; Flame's `name="rgb"` header carried onto every AOV part) and `test_append_compares_the_format_with_the_current_version` (mixed-size versions; the format check used the first feed). Both fail with the fixes reverted. Plus `test_comparison_helper_catches_*` (the helper fails on a lost `nbTicks` / a changed Flame element) and `test_oracle_*` (oracle vs published values and Flame's own BCD word).
+
+### `test_flame_clips.py` (marker `flame_clips`)
+
+Data-driven; sources and per-clip checks are listed in `tests/flame_clips.md`. Per clip: `test_real_clip_to_new_clip_matches_field_by_field`, `test_real_clip_append_matches_and_keeps_every_flame_element` (also: version numbering continues Flame's), `test_real_clip_append_to_an_append`; `test_planned_clip_covers_what_it_is_for` per planned folder; `test_real_clip_exr_timecode_when_the_xml_has_none` pins a **known gap** (strict: fails once fixed): a source with EXR `smpte:TimeCode` but no XML `<startTimecode>` (Autodesk's examples) is written from 00:00:00:00. Clips this project can't read (pattern, movie, invalid XML) or whose media is missing skip with the reason. Locally (2026-10-29): `alpha_test.clip` and 6 Autodesk examples pass, 6 xfail on that gap.
+
+The existing `test_autodesk_*` (test_system.py) and `test_real_flame_clip_round_trip` (test_clip_info.py) are marked `flame_clips` too, so smoke is the same set locally and on CI.
+
+---
+
 ## Robustness, scale and node-gap suites (added 2026-10-24)
 
-Contract being locked in: **fail loudly and name the file; never return a plausible-looking wrong tensor.** Where behaviour is found to be weaker than that, pin it as `xfail(strict=True)`, so fixing the library flips it to a failure that forces the marker's removal. There are currently none (the four found on 2026-10-24 were fixed in 1.0.1, see bottom).
+Contract being locked in: **fail loudly and name the file; never return a plausible-looking wrong tensor.** Where behaviour is found to be weaker than that, pin it as `xfail(strict=True)`, so fixing the library flips it to a failure that forces the marker's removal. None in these suites (the four found on 2026-10-24 were fixed in 1.0.1, see bottom); the one pinned gap is in `test_flame_clips.py` (above).
 
 ### `test_robustness.py`
 
