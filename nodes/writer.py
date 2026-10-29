@@ -10,6 +10,7 @@ import torch
 
 from ..lib import image_io, openclip_xml, package_layout, timecode
 from ..lib.openclip_xml import ClipFormat, ClipSpan, ClipVersion
+from .reader import _resolve_read_plan, feed_start_timecode
 
 # Root <clip version="..."> values accepted for a new clip. 6 is the default: Flame 2024
 # imported the identical file once version="8" was changed to "6" (issue #4).
@@ -19,6 +20,9 @@ DEFAULT_COLOUR_SPACE = "Rec.709 video"
 DEFAULT_FPS = 24.0
 DEFAULT_START_FRAME = 1
 DEFAULT_FRAME_PADDING = 4
+DEFAULT_BIT_DEPTH = "half (16-bit)"
+# clip_info["bit_depth"] (the source's first EXR header) -> exr_bit_depth option.
+_BIT_DEPTHS = {"half": "half (16-bit)", "float": "float (32-bit)"}
 
 _AUTO = "auto = from clip_info, else "
 
@@ -45,7 +49,8 @@ class OpenClipWriter:
                 "colour_space": ("STRING", {"default": "", "tooltip": "Empty: " + _AUTO + DEFAULT_COLOUR_SPACE}),
                 "format_version": ("STRING", {"default": "", "tooltip": "Open Clip schema 5-9 for a new clip. Empty: " + _AUTO + DEFAULT_FORMAT_VERSION}),
                 "file_format": (["EXR", "PNG"],),
-                "exr_bit_depth": (["half (16-bit)", "float (32-bit)"],),
+                # "auto" first, so it is the default; saved values stay valid (a combo is one widget).
+                "exr_bit_depth": (["auto", "half (16-bit)", "float (32-bit)"], {"tooltip": _AUTO + DEFAULT_BIT_DEPTH}),
                 "exr_compression": (["ZIP", "PIZ", "DWAB"],),
                 "aov_layout": (["Multichannel", "Separate Files"],),
                 "publish": ("BOOLEAN", {"default": False}),
@@ -78,7 +83,7 @@ class OpenClipWriter:
         start_frame: int = -1,
         frame_padding: int = 0,
         file_format: str = "EXR",
-        exr_bit_depth: str = "half (16-bit)",
+        exr_bit_depth: str = "auto",
         exr_compression: str = "ZIP",
         aov_layout: str = "Multichannel",
         colour_space: str = "",
@@ -106,6 +111,8 @@ class OpenClipWriter:
         start_frame = start_frame if start_frame >= 0 else int(info.get("start_frame", DEFAULT_START_FRAME))
         frame_padding = frame_padding if frame_padding > 0 else int(info.get("frame_padding") or DEFAULT_FRAME_PADDING)
         colour_space = colour_space.strip() or info.get("colour_space") or DEFAULT_COLOUR_SPACE
+        if exr_bit_depth == "auto":
+            exr_bit_depth = _BIT_DEPTHS.get(info.get("bit_depth") or "", DEFAULT_BIT_DEPTH)
         format_version_typed = format_version.strip()
         format_version = _resolve_format_version(format_version, info)
         metadata = info.get("metadata")
@@ -139,9 +146,10 @@ class OpenClipWriter:
         # touches the disk, so a refused run never leaves orphan frames behind.
         fps_label = openclip_xml.fps_label_from_float(fps)
         tc_rate = timecode.tc_rate(fps)
-        start_tc = _resolve_start_timecode(start_timecode, info, existing, tc_rate)
+        existing_tc = _existing_timecode(existing, probe.clip_file) if existing is not None else None
+        start_tc = _resolve_start_timecode(start_timecode, info, existing_tc, tc_rate)
         if existing is not None:
-            _check_append_timing(existing, probe.clip_file, start_tc, start_frame, tc_rate)
+            _check_append_timing(existing, probe.clip_file, existing_tc, start_tc, start_frame, tc_rate)
         if existing is not None and format_version_typed and format_version != existing.schema_version:
             print(
                 f"[OpenClipWriter] WARNING: format_version '{format_version}' ignored -- appending to "
@@ -238,7 +246,7 @@ def _same_file_as_source(output_dir: str, clip_name: str, source: str) -> tuple[
     return output_dir, clip_name
 
 
-def _resolve_start_timecode(widget: str, info: dict, existing, rate: int) -> str:
+def _resolve_start_timecode(widget: str, info: dict, existing_tc: Optional[str], rate: int) -> str:
     """Widget > clip_info > the existing clip's current feed (when appending) > 00:00:00:00."""
     for what, value in (("start_timecode", widget.strip()), ("clip_info start_timecode", info.get("start_timecode") or "")):
         if value:
@@ -246,23 +254,32 @@ def _resolve_start_timecode(widget: str, info: dict, existing, rate: int) -> str
                 return timecode.normalize(value, rate)
             except ValueError as e:
                 raise ValueError(f"[OpenClipWriter] {what}: {e}") from None
-    if existing is not None:
-        return _existing_timecode(existing)
-    return timecode.ZERO
+    return existing_tc or timecode.ZERO
 
 
-def _existing_timecode(existing) -> str:
+def _existing_timecode(existing, clip_file: Path) -> str:
+    """The existing clip's start timecode, as OpenClipReader reports it: the current feed's
+    <startTimecode>, else its first frame's EXR smpte:TimeCode, else 00:00:00:00. Using the
+    Reader's own lookup keeps a Reader -> Writer append to such a clip consistent."""
     current = existing.versions.get(existing.current_version)
-    # A feed with no <startTimecode> is taken as 00:00:00:00.
-    return (current.start_timecode if current else "") or timecode.ZERO
+    if current is None:
+        return timecode.ZERO
+    if current.start_timecode:
+        return current.start_timecode
+    try:
+        # Same path resolution (incl. auto-remap) as the Reader, so it finds the same frame.
+        _c, _p, version, abs_pattern, _s, _e = _resolve_read_plan(str(clip_file), current.name, -1, -1, "", "")
+        num, den = openclip_xml.fps_to_rational(openclip_xml.read_format(str(clip_file)).fps)
+        return feed_start_timecode(version, abs_pattern, num / den) or timecode.ZERO
+    except (OSError, ValueError):
+        return timecode.ZERO
 
 
-def _check_append_timing(existing, clip_file: Path, start_tc: str, start_frame: int, rate: int) -> None:
+def _check_append_timing(existing, clip_file: Path, ex_tc: str, start_tc: str, start_frame: int, rate: int) -> None:
     """Issue #7 rules for adding a version to an existing clip (also with overwrite on):
     - start timecodes differ -> error (Flame would place the versions apart in time);
     - same real timecode, different start frame -> warning only (timecode places it);
     - both 00:00:00:00 and different start frames -> error (nothing else aligns them)."""
-    ex_tc = _existing_timecode(existing)
     if ex_tc != start_tc:
         raise ValueError(
             f"[OpenClipWriter] START TIMECODE MISMATCH — refusing to write.\n"

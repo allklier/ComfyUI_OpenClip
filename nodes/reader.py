@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from ..lib import image_io, openclip_xml
-from ._clip_info import build_report, padding_of
+from ..lib import image_io, openclip_xml, timecode
+from ._clip_info import bit_depth_of, build_report, padding_of
 from ._paths import resolve_clip_path
 
 # Guard against probing excessively broad path prefixes (e.g. root '/').
@@ -53,6 +53,42 @@ def _resolve_read_plan(clip_path: str, version: str, start_frame: int, end_frame
     resolved_end = (span.start_frame + span.duration - 1) if end_frame == -1 else end_frame
 
     return clip_path, parsed, clip_version, abs_pattern, resolved_start, resolved_end
+
+
+def feed_start_timecode(clip_version: openclip_xml.ClipVersion, abs_pattern: str, fps: float) -> str:
+    """The feed's <startTimecode>; when it has none, the smpte:TimeCode in the header of the
+    feed's own first frame (Autodesk's example clips carry their timecode only there). The
+    feed's first frame, not the first frame read, so a sub-range read still reports the clip's
+    start, as with the XML value. Never derived from a frame number. "" when neither exists
+    (or the frame isn't there, or the rate is above 30: see timecode.from_smpte_bcd).
+    Shared with OpenClipWriter's append check, so both see the same timecode."""
+    if clip_version.start_timecode:
+        return clip_version.start_timecode
+    if not clip_version.spans:
+        return ""
+    word = image_io.frame_timecode(image_io.frame_path(abs_pattern, clip_version.spans[0].start_frame))
+    if word is None:
+        return ""
+    try:
+        return timecode.from_smpte_bcd(word, timecode.tc_rate(fps))
+    except ValueError:
+        return ""
+
+
+def _check_uniform_size(clip_path: str) -> None:
+    """Refuse a clip whose versions have different sizes (XML only; feeds that record no size
+    are skipped). Stricter than Flame on purpose: switching versions would change the image size
+    inside the workflow (user decision, 2026-10-29)."""
+    sized = [(v, w, h) for v, w, h in openclip_xml.feed_sizes(clip_path) if w > 0 and h > 0]
+    if len({(w, h) for _, w, h in sized}) > 1:
+        listing = "\n".join(f"  {v}  {w}x{h}" for v, w, h in sized)
+        raise ValueError(
+            f"[OpenClipReader] VERSIONS OF DIFFERENT SIZES — refusing to read '{clip_path}'.\n"
+            f"{listing}\n"
+            f"Every version of a clip used in ComfyUI must have the same size, so that switching "
+            f"versions can't change the image size inside the workflow. Export the versions of "
+            f"another size as a separate clip."
+        )
 
 
 # unique_id -> the files the last successful execute() actually read, so IS_CHANGED can
@@ -121,6 +157,7 @@ class OpenClipReader:
         clip_path, parsed, clip_version, abs_pattern, resolved_start, resolved_end = _resolve_read_plan(
             clip_path, version, start_frame, end_frame, path_from, path_to
         )
+        _check_uniform_size(clip_path)
         if frame_cap > -1:
             resolved_end = min(resolved_end, resolved_start + frame_cap - 1)
         # Remember what this node instance actually read, so IS_CHANGED can stat these
@@ -138,19 +175,21 @@ class OpenClipReader:
         frame_count, height, width = images.shape[0], images.shape[1], images.shape[2]
         aov_handle = {"abs_pattern": abs_pattern, "start_frame": resolved_start, "end_frame": resolved_end, "clip_path": clip_path}
         first_frame = image_io.frame_path(abs_pattern, resolved_start)
+        file_format = image_io.describe_frame(first_frame)
         clip_info = {
             "clip_path": clip_path,
             "clip_name": parsed.clip_name,
             "version_name": clip_version.name,
             "start_frame": resolved_start,
-            "start_timecode": clip_version.start_timecode,
+            "start_timecode": feed_start_timecode(clip_version, abs_pattern, fps),
             "fps": fps,
             "colour_space": colour_space,
             "format_version": parsed.schema_version,
             "frame_padding": padding_of(abs_pattern),
+            "bit_depth": bit_depth_of(file_format),
             "metadata": metadata,
             "media_pattern": abs_pattern,
-            "file_format": image_io.describe_frame(first_frame),
+            "file_format": file_format,
             "width": width,
             "height": height,
             "frame_count": frame_count,

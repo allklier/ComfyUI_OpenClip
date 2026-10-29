@@ -63,12 +63,12 @@ FLAME_FEED = """\t\t\t\t<feed vuid="{vuid}" uid="u{vuid}">
 
 
 def _flame_clip(tmp_path, name="woods walk ", ticks=86400, start=1, n=3, xml_colour="Rec.709 video",
-                exr_meta=None, with_tc=True) -> Path:
+                exr_meta=None, with_tc=True, exr_tc=True) -> Path:
     """A Flame-style clip '<name>.clip' (name kept verbatim, spaces included) with one version v0."""
     stem = name.strip().replace(" ", "_")
     exr_meta = {"autodeskColorSpace": "Rec.709 video"} if exr_meta is None else exr_meta
     image_io.write_sequence(str(tmp_path / f"{stem}_v0.%06d.exr"), torch.rand(n, 8, 8, 3), None, start, "EXR",
-                            metadata=exr_meta, start_timecode=(ticks, 24, False))
+                            metadata=exr_meta, start_timecode=(ticks, 24, False) if exr_tc else None)
     colour = f"\t\t\t\t\t\t<colourSpace type=\"string\">{xml_colour}</colourSpace>\n" if xml_colour else ""
     tc = (f"\t\t\t\t\t<startTimecode type=\"time\"><rate>24</rate><nbTicks>{ticks}</nbTicks>"
           f"<dropMode>NDF</dropMode></startTimecode>\n") if with_tc else ""
@@ -165,6 +165,22 @@ def test_smpte_bcd_matches_flames_own_exr_value():
     assert timecode.smpte_bcd(0, 50) is None  # frames field can't hold 40-49
 
 
+@pytest.mark.parametrize("text, rate", [("01:00:00:00", 24), ("10:44:22:06", 24), ("23:59:59:24", 25),
+                                         ("01:00:00;00", 30), ("00:01:00;02", 30), ("00:00:00:29", 30)])
+def test_smpte_bcd_decodes_what_it_encodes(text, rate):
+    ticks, drop = timecode.parse_tc(text, rate)
+    assert timecode.from_smpte_bcd(timecode.smpte_bcd(ticks, rate, drop)[0], rate) == text
+
+
+def test_smpte_bcd_decode_of_flames_own_exr_value_and_refusals():
+    assert timecode.from_smpte_bcd(272900614, 24) == "10:44:22:06"
+    assert timecode.from_smpte_bcd(16777216, 24) == "01:00:00:00"  # Autodesk's examples, frame 86400
+    with pytest.raises(ValueError):
+        timecode.from_smpte_bcd(16777216, 50)  # nothing is read above 30
+    with pytest.raises(ValueError):
+        timecode.from_smpte_bcd(0x25, 24)  # frame 25 doesn't exist at 24
+
+
 # --- openclip_xml ---------------------------------------------------------------------------------
 
 
@@ -230,6 +246,33 @@ def test_issue7_written_exrs_carry_a_per_frame_timecode_counting_from_the_start(
     assert [_exr_timecode(f) for f in frames] == ["01:00:00:00", "01:00:00:01", "01:00:00:02"]
 
 
+def test_reader_takes_the_exr_timecode_when_the_xml_has_none(tmp_path):
+    """Decision 2026-10-29: no <startTimecode> -> the feed's first frame's EXR smpte:TimeCode."""
+    r = _read(_flame_clip(tmp_path, with_tc=False))
+    assert r["clip_info"]["start_timecode"] == "01:00:00:00"
+    assert "start TC 01:00:00:00" in r["clip_report"]
+
+
+def test_reader_exr_timecode_is_the_feeds_first_frame_also_for_a_sub_range(tmp_path):
+    """The clip's start is its feed's first frame (01:00:00:00 at frame 1), not the first frame
+    read (frame 2 carries 01:00:00:01): the same rule as for the XML value."""
+    clip = _flame_clip(tmp_path, with_tc=False)
+    assert _read(clip, start_frame=2)["clip_info"]["start_timecode"] == "01:00:00:00"
+    assert _read(clip, start_frame=2)["clip_info"]["start_frame"] == 2
+
+
+def test_reader_xml_timecode_wins_over_the_exr(tmp_path):
+    clip = _flame_clip(tmp_path, ticks=86400)
+    text = clip.read_text(encoding="utf-8").replace("<nbTicks>86400</nbTicks>", "<nbTicks>172800</nbTicks>")
+    clip.write_text(text, encoding="utf-8")
+    assert _read(clip)["clip_info"]["start_timecode"] == "02:00:00:00"
+
+
+def test_reader_without_any_timecode_reports_none(tmp_path):
+    r = _read(_flame_clip(tmp_path, with_tc=False, exr_tc=False))
+    assert r["clip_info"]["start_timecode"] == "" and "start TC (none)" in r["clip_report"]
+
+
 def test_issue7_reader_colour_comes_from_the_clip_xml(tmp_path):
     assert _read(_flame_clip(tmp_path))["info.colour_space"] == "Rec.709 video"  # was '' in 1.1.1
 
@@ -283,8 +326,19 @@ def test_append_at_zero_timecode_with_other_start_frame_errors_and_writes_nothin
     assert _snapshot(tmp_path) == before
 
 
-def test_append_to_a_clip_without_start_timecode_treats_it_as_zero(tmp_path):
-    clip = _flame_clip(tmp_path, name="shot", with_tc=False)
+def test_append_to_a_clip_without_xml_timecode_uses_its_exr_timecode(tmp_path):
+    """Same lookup as the Reader (XML, else the feed's first frame's EXR smpte:TimeCode), so an
+    append to such a clip lines up with what the Reader reports."""
+    clip = _flame_clip(tmp_path, name="shot", with_tc=False)  # EXRs from 01:00:00:00
+    with pytest.raises(ValueError, match=r"(?s)START TIMECODE MISMATCH.*starts at 01:00:00:00"):
+        _write(clip_path=str(tmp_path), clip_name="shot", fps=23.976, start_timecode="00:00:00:00")
+    _write(clip_path=str(tmp_path), clip_name="shot", fps=23.976)  # auto -> the EXR's 01:00:00:00
+    _write(clip_info=_read(clip)["clip_info"])  # Reader -> Writer: the same timecode
+    assert [_ticks(f) for f in _feeds(clip)[1:]] == [86400, 86400]
+
+
+def test_append_to_a_clip_without_any_timecode_treats_it_as_zero(tmp_path):
+    clip = _flame_clip(tmp_path, name="shot", with_tc=False, exr_tc=False)
     with pytest.raises(ValueError, match=r"(?s)START TIMECODE MISMATCH.*00:00:00:00"):
         _write(clip_path=str(tmp_path), clip_name="shot", fps=23.976, start_timecode="01:00:00:00")
     _write(clip_path=str(tmp_path), clip_name="shot", fps=23.976)  # auto -> 00:00:00:00, start 1 = 1
@@ -496,6 +550,44 @@ def test_clip_info_node_unpacks_every_value(tmp_path):
     assert dict(zip(OpenClipClipInfo.RETURN_NAMES, OpenClipClipInfo.RETURN_TYPES))["metadata"] == "CLIP_METADATA"
 
 
+def test_clip_info_node_bit_depth_output_sits_before_clip_report(tmp_path):
+    assert OpenClipClipInfo.RETURN_NAMES[-2:] == ("bit_depth", "clip_report")
+    assert OpenClipClipInfo.RETURN_TYPES[-2:] == ("STRING", "STRING")
+    info = _read(_flame_clip(tmp_path))["clip_info"]
+    assert dict(zip(OpenClipClipInfo.RETURN_NAMES, OpenClipClipInfo().execute(info)))["bit_depth"] == "half"
+
+
+# --- bit depth (2026-10-29) -------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("depth, fmt, expected", [("half (16-bit)", "EXR", "half"), ("float (32-bit)", "EXR", "float"),
+                                                  ("half (16-bit)", "PNG", "")])
+def test_reader_clip_info_bit_depth_from_the_first_frame(tmp_path, depth, fmt, expected):
+    out = _write(clip_path=str(tmp_path), clip_name="a", exr_bit_depth=depth, file_format=fmt)
+    r = _read(out)
+    assert r["clip_info"]["bit_depth"] == expected
+    assert r["clip_report"].count(expected or "PNG") == 1  # FORMAT line only, never repeated
+
+
+def _written_depth(clip) -> str:
+    feed = _feeds(clip)[-1]
+    frame = Path(clip).parent / feed.findtext("spans/span/path")
+    path = re.sub(r"\[(\d+)-\d+\]", lambda m: m.group(1), str(frame))
+    return image_io.describe_frame(path).split()[1]
+
+
+def test_writer_bit_depth_auto_takes_clip_info_else_half(tmp_path):
+    assert OpenClipWriter.INPUT_TYPES()["required"]["exr_bit_depth"][0] == ["auto", "half (16-bit)", "float (32-bit)"]
+    src = _write(clip_path=str(tmp_path / "src"), clip_name="a", exr_bit_depth="float (32-bit)")
+    info = _read(src)["clip_info"]
+    assert _written_depth(_write(clip_info=info, clip_path=str(tmp_path / "auto"), exr_bit_depth="auto")) == "float"
+    assert _written_depth(_write(clip_info=info, clip_path=str(tmp_path / "typed"),
+                                 exr_bit_depth="half (16-bit)")) == "half"  # an explicit choice overrides
+    assert _written_depth(_write(clip_path=str(tmp_path / "none"), clip_name="b", exr_bit_depth="auto")) == "half"
+    png = _read(_write(clip_path=str(tmp_path / "png"), clip_name="p", file_format="PNG"))["clip_info"]
+    assert _written_depth(_write(clip_info=png, clip_path=str(tmp_path / "frompng"), exr_bit_depth="auto")) == "half"
+
+
 def test_clip_info_colour_feeds_colour_space_transform_same_as_input(tmp_path):
     pytest.importorskip("PyOpenColorIO")
     from ComfyUI_OpenClip.nodes.colour_space_transform import (
@@ -521,8 +613,8 @@ def test_exr_sequence_clip_info_drives_a_new_clip(tmp_path):
     r = ExrSequenceReader().execute(sequence_path=str(tmp_path / "render.#####.exr"), layer="", start_frame=-1,
                                     end_frame=-1, frame_cap=-1, fps=25.0, colour_space="")["result"]
     info = r[2]
-    assert (info["clip_path"], info["clip_name"], info["frame_padding"], info["start_timecode"]) == (
-        str(tmp_path), "render", 5, "")
+    assert (info["clip_path"], info["clip_name"], info["frame_padding"], info["start_timecode"], info["bit_depth"]) == (
+        str(tmp_path), "render", 5, "", "half")
     out = _write(n=2, clip_info=info)
     feed = _feeds(out)[0]
     assert Path(out) == tmp_path / "render.clip"
@@ -567,3 +659,17 @@ def test_real_flame_clip_round_trip(real_flame_clip):
     feeds = _feeds(real_flame_clip)
     assert flat(feeds[0]) == original  # lxml re-indents on save; content is unchanged
     assert [(f.get("vuid"), _ticks(f)) for f in feeds] == [("v01", 927893), ("v02", 927893)]
+
+
+def test_exr_sequence_start_timecode_from_the_first_frame_read(tmp_path):
+    """A plain sequence has no clip start of its own; the Writer numbers the new clip from the
+    first frame read, so that frame's smpte:TimeCode is its start timecode."""
+    image_io.write_sequence(str(tmp_path / "plate.%04d.exr"), torch.rand(3, 8, 8, 3), None, 10, "EXR",
+                            start_timecode=(86400, 24, False))
+    kw = dict(sequence_path=str(tmp_path / "plate.####.exr"), layer="", end_frame=-1, frame_cap=-1, fps=24.0,
+              colour_space="")
+    info = ExrSequenceReader().execute(start_frame=-1, **kw)["result"][2]
+    assert info["start_timecode"] == "01:00:00:00"
+    assert ExrSequenceReader().execute(start_frame=11, **kw)["result"][2]["start_timecode"] == "01:00:00:01"
+    feed = _feeds(_write(clip_info=info))[0]
+    assert _ticks(feed) == 86400

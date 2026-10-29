@@ -83,6 +83,15 @@ def bcd_decode(word: int) -> str:
             f"{';' if drop else ':'}{g(4, 2)}{g(0, 4)}")
 
 
+def exr_tc_field(word: Optional[int], rate: int) -> Optional[tuple[int, int, str]]:
+    """A source frame's smpte:TimeCode word as a feed "tc" field (rate, ticks, dropMode), or None
+    (no word, or a rate above 30, where no EXR timecode is read)."""
+    if word is None or rate > 30:
+        return None
+    text = bcd_decode(word)
+    return rate, tc_ticks(text, rate), "DF" if ";" in text else "NDF"
+
+
 # --- reading the fields Flame uses ------------------------------------------------------------
 
 
@@ -164,12 +173,14 @@ def source_media_pattern(clip_path, vuid: Optional[str] = None) -> Optional[str]
 # --- expectations ----------------------------------------------------------------------------
 
 
-def expected_feed(source: dict, *, first: int, count: int, exr_colour: str = "") -> dict:
+def expected_feed(source: dict, *, first: int, count: int, exr_colour: str = "",
+                  exr_tc_word: Optional[int] = None) -> dict:
     """What the Writer should write for a version made from `source` (feed_fields of the version
-    read), Reader -> Writer with clip_info and every field on auto."""
+    read), Reader -> Writer with clip_info and every field on auto. `exr_tc_word`: the
+    smpte:TimeCode of the source feed's first frame, the start timecode when the XML has none."""
     rate = source["edit_rate"] or source["sample_rate"] or WRITER_DEFAULT_RATE
     tc_rate = round(rate)
-    tc = source["tc"] or (tc_rate, 0, "NDF")
+    tc = source["tc"] or exr_tc_field(exr_tc_word, tc_rate) or (tc_rate, 0, "NDF")
     return {
         "edit_rate": rate,
         "sample_rate": rate,
@@ -177,6 +188,7 @@ def expected_feed(source: dict, *, first: int, count: int, exr_colour: str = "")
         "colour": source["colour"] or exr_colour or WRITER_DEFAULT_COLOUR,
         "width": source["width"],
         "height": source["height"],
+        "depth": source["depth"],  # the Writer's bit depth on auto (clip_info's)
         "padding": source["padding"],
         "first": first,
         "last": first + count - 1,
@@ -196,12 +208,12 @@ def feed_diffs(expected: dict, written: dict, where: str) -> list[str]:
 
 
 def new_clip_diffs(source_clip, written_clip, *, first: int, count: int, exr_colour: str = "",
-                   source_vuid: Optional[str] = None) -> list[str]:
+                   source_vuid: Optional[str] = None, exr_tc_word: Optional[int] = None) -> list[str]:
     """A brand-new clip written from source_clip's version `source_vuid` (default current)."""
     src = feed_fields(source_clip, source_vuid)
     root = load(written_clip)
     vuid = current_vuid(root)
-    out = feed_diffs(expected_feed(src, first=first, count=count, exr_colour=exr_colour),
+    out = feed_diffs(expected_feed(src, first=first, count=count, exr_colour=exr_colour, exr_tc_word=exr_tc_word),
                      feed_fields(root, vuid), f"new clip feed {vuid}")
     src_name = src["name"] if (src["name"] or "").strip() else Path(source_clip).stem
     want_schema = src["schema"] if src["schema"] in ("5", "6", "7", "8", "9") else "6"
@@ -218,7 +230,7 @@ def new_clip_diffs(source_clip, written_clip, *, first: int, count: int, exr_col
 
 
 def append_diffs(original: bytes, appended_clip, new_vuids: list[str], *, source_vuid: str,
-                 first: int, count: int, exr_colour: str = "") -> list[str]:
+                 first: int, count: int, exr_colour: str = "", exr_tc_word: Optional[int] = None) -> list[str]:
     """`appended_clip` after appending `new_vuids` (in order) to the clip whose bytes were
     `original`: every original element unchanged (only the two currentVersion attributes move),
     exactly the new feeds/versions added, and each new feed matching the source version."""
@@ -269,7 +281,7 @@ def append_diffs(original: bytes, appended_clip, new_vuids: list[str], *, source
         out.append(f"append changed an original element: {diff}")
 
     src = feed_fields(orig, source_vuid)
-    want = expected_feed(src, first=first, count=count, exr_colour=exr_colour)
+    want = expected_feed(src, first=first, count=count, exr_colour=exr_colour, exr_tc_word=exr_tc_word)
     want["edit_rate"] = src["edit_rate"]  # the track's own <editRate>, which an append leaves alone
     for v in new_vuids:
         out += feed_diffs(want, feed_fields(new, v), f"appended feed {v}")
@@ -350,14 +362,11 @@ def pixel_diffs(written, source) -> list[str]:
 
 
 def exr_frame_diffs(written_clip, vuid: str, *, expected_colour: str,
-                    source_pattern: Optional[str] = None, source_first: Optional[int] = None,
-                    source_tc: bool = True) -> list[str]:
+                    source_pattern: Optional[str] = None, source_first: Optional[int] = None) -> list[str]:
     """Per written frame: smpte:TimeCode = the feed's start timecode + offset (rates <= 30 only;
     the BCD frames field holds 0-39), autodeskColorSpace/openclip:ColorSpace = the colour tag; and,
     when the source frames are given, the same timecode as the source's frame at that offset
-    (source_tc=False skips that: a source whose XML has no <startTimecode> but whose EXRs carry
-    one -- Autodesk's examples -- is written from 00:00:00:00, a known gap, see
-    test_flame_clips.test_real_clip_exr_timecode_when_the_xml_has_none)."""
+    (also when the source's XML has no <startTimecode> and only its EXRs carry one)."""
     root = load(written_clip)
     f = feed_fields(root, vuid)
     pattern = _RANGE_RE.sub(f"%0{f['padding']}d", f["path"])
@@ -373,7 +382,7 @@ def exr_frame_diffs(written_clip, vuid: str, *, expected_colour: str,
             got = bcd_decode(tc[0]) if tc is not None else None
             if got != want:
                 out.append(f"{Path(path).name}: smpte:TimeCode {got!r}, feed start + {i} is {want!r}")
-            if source_pattern is not None and source_tc:
+            if source_pattern is not None:
                 src_tc = exr_attrs(source_pattern % (source_first + i)).get("smpte:TimeCode")
                 if src_tc is not None and tc is not None and src_tc[0] != tc[0]:
                     out.append(f"{Path(path).name}: smpte:TimeCode {bcd_decode(tc[0])!r}, source frame has "

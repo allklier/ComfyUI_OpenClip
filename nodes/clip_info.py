@@ -15,11 +15,11 @@ class OpenClipClipInfo:
 
     RETURN_TYPES = (
         "STRING", "STRING", "STRING", "INT", "STRING", "FLOAT", "STRING", "STRING", "INT",
-        "CLIP_METADATA", "STRING",
+        "CLIP_METADATA", "STRING", "STRING",
     )
     RETURN_NAMES = (
         "clip_path", "clip_name", "version_name", "start_frame", "start_timecode", "fps",
-        "colour_space", "format_version", "frame_padding", "metadata", "clip_report",
+        "colour_space", "format_version", "frame_padding", "metadata", "bit_depth", "clip_report",
     )
     FUNCTION = "execute"
     CATEGORY = "OpenClip"
@@ -29,5 +29,5 @@ class OpenClipClipInfo:
         return (
             i["clip_path"], i["clip_name"], i["version_name"], i["start_frame"], i["start_timecode"],
             i["fps"], i["colour_space"], i["format_version"], i["frame_padding"], i["metadata"],
-            build_report(i),
+            i.get("bit_depth", ""), build_report(i),
         )

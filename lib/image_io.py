@@ -93,6 +93,20 @@ def describe_frame(filepath: str) -> str:
     finally:
         inp.close()
 
+def frame_timecode(filepath: str) -> Optional[int]:
+    """Header-only: a frame's smpte:TimeCode time-and-flags word, or None when it has none or
+    can't be opened. Verified with OIIO 3.1.15: spec.getattribute("smpte:TimeCode") gives
+    (word, user_data), or None when the attribute is absent."""
+    inp = oiio.ImageInput.open(str(filepath))
+    if not inp:
+        oiio.geterror()  # clear OIIO's pending error; a missing frame just means no timecode
+        return None
+    try:
+        value = inp.spec().getattribute(TIMECODE_KEY)
+    finally:
+        inp.close()
+    return int(value[0]) if value else None
+
 # EXR part-name attribute, tried in this order (see AOV Channel Handling below).
 _PART_NAME_ATTRS: tuple[str, ...] = ("name", "oiio:subimagename")
 

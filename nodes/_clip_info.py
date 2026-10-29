@@ -6,11 +6,13 @@ Keys (all always present):
   clip_name       <name> from the .clip, never stripped; the filename stem for a sequence
   version_name    the version actually read ("" for a sequence)
   start_frame     first frame actually read
-  start_timecode  "HH:MM:SS:FF" from the feed's <startTimecode> ("" when none)
+  start_timecode  "HH:MM:SS:FF" from the feed's <startTimecode>, else its first frame's EXR
+                  smpte:TimeCode ("" when none)
   fps             exact frame rate (FLOAT)
   colour_space    see OpenClipReader for the lookup order ("" when none)
   format_version  Open Clip schema version ("" for a sequence)
   frame_padding   digits in the frame numbers
+  bit_depth       "half"/"float" from the first frame's EXR header ("" for anything else, e.g. PNG)
   metadata        EXR header attributes of the first frame (what CLIP_METADATA carried)
 For clip_report only:
   media_pattern, file_format ('EXR half PIZ'), width, height, frame_count,
@@ -31,6 +33,13 @@ def padding_of(pattern: str) -> int:
     if not m:
         return 0
     return int(m.group(1)) if m.group(1) else 1
+
+
+def bit_depth_of(file_format: str) -> str:
+    """'half'/'float' from a describe_frame() text such as 'EXR half PIZ' (the first frame's
+    header); "" for anything else (PNG, integer EXR)."""
+    parts = file_format.split()
+    return parts[1] if len(parts) > 1 and parts[0] == "EXR" and parts[1] in ("half", "float") else ""
 
 
 def fps_text(fps: float) -> str:

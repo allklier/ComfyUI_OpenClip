@@ -32,6 +32,7 @@ class FlameLike:
     fps: str = "23.976"
     rate_xml: str = "rational"         # "rational" (Flame 2027), "decimal" (<editRate>23.976</editRate>), "none"
     tc: Optional[str] = "00:00:00:00"   # None: no <startTimecode> at all
+    xml_tc: bool = True                 # False: tc only in the EXRs' smpte:TimeCode (Autodesk's examples)
     start: int = 1
     n: int = 3
     padding: int = 6
@@ -122,7 +123,7 @@ def build(case: FlameLike, folder: Path) -> Path:
         I = "\t" * 5
         colour = f'{I}\t<colourSpace type="string">{case.colour}</colourSpace>\n' if case.colour else ""
         tc = ""
-        if case.tc is not None:
+        if case.tc is not None and case.xml_tc:
             tc = (f"{I}<userData type=\"dict\">\n" + _time_xml("recordTimecode", case, I + "\t", label=True)
                   + f"{I}</userData>\n")
         feeds.append(
@@ -143,7 +144,7 @@ def build(case: FlameLike, folder: Path) -> Path:
             f"{I}</storageFormat>\n"
             f"{tc}"
             + _rate_xml("sampleRate", case, I)
-            + (_time_xml("startTimecode", case, I) if case.tc is not None else "")
+            + (_time_xml("startTimecode", case, I) if case.tc is not None and case.xml_tc else "")
             + f"{I}<spans>\n{I}\t<span>\n"
             f"{I}\t\t<path encoding=\"pattern\">{media}/{case.name}_{vuid}.{rng}.exr</path>\n"
             f"{I}\t</span>\n{I}</spans>\n"

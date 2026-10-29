@@ -208,6 +208,22 @@ def read_format(clip_path: str) -> ClipFormat:
     )
 
 
+def feed_sizes(clip_path: str) -> list[tuple[str, int, int]]:
+    """(vuid, width, height) of every feed in the track the reader reads, from each feed's
+    <storageFormat>; 0 where a size isn't recorded. XML only (the Reader's mixed-size check)."""
+    root = _load(Path(clip_path)).getroot()
+    feeds_el = _select_track(root, clip_path).find("feeds")
+
+    def _int(feed: etree._Element, tag: str) -> int:
+        try:
+            return int((feed.findtext(f"storageFormat/{tag}") or "0").strip())
+        except ValueError:
+            return 0
+
+    feeds = feeds_el.findall("feed") if feeds_el is not None else []
+    return [(f.get("vuid") or "", _int(f, "width"), _int(f, "height")) for f in feeds]
+
+
 def generate(
     clip_name: str,
     versions: dict[str, ClipVersion],

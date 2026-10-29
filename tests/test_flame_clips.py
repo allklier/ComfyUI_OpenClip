@@ -25,8 +25,8 @@ from pathlib import Path
 import pytest
 from lxml import etree
 
-from .flame_compare import feed_fields, load, next_flame_version, video_track
-from .flame_roundtrip import append_check, new_clip_check
+from .flame_compare import exr_attrs, exr_tc_field, feed_fields, load, next_flame_version, source_media_pattern, video_track
+from .flame_roundtrip import append_check, new_clip_check, read
 
 pytestmark = pytest.mark.flame_clips
 
@@ -120,12 +120,47 @@ def real_clip(request, tmp_path):
     return clip
 
 
+def _mixed_sizes(clip) -> list[tuple[str, int, int]]:
+    """(vuid, width, height) of the picture track's feeds when their recorded sizes differ, else []."""
+    sizes = []
+    for f in video_track(load(clip)).findall("feeds/feed"):
+        w = (f.findtext("storageFormat/width") or "").strip()
+        h = (f.findtext("storageFormat/height") or "").strip()
+        if w.isdigit() and h.isdigit() and int(w) > 0 and int(h) > 0:
+            sizes.append((f.get("vuid"), int(w), int(h)))
+    return sizes if len({s[1:] for s in sizes}) > 1 else []
+
+
+def _refused_for_mixed_sizes(clip) -> bool:
+    """The Reader refuses a clip whose versions differ in size (user decision 2026-10-29, stricter
+    than Flame). For such a real clip the expected result is that clear error, not a round trip."""
+    if not _mixed_sizes(clip):
+        return False
+    with pytest.raises(ValueError, match="VERSIONS OF DIFFERENT SIZES"):
+        read(clip)
+    return True
+
+
+def test_real_clip_with_versions_of_different_sizes_is_refused(real_clip):
+    sizes = _mixed_sizes(real_clip)
+    if not sizes:
+        pytest.skip("all versions have one size: not this case")
+    with pytest.raises(ValueError, match="VERSIONS OF DIFFERENT SIZES") as e:
+        read(real_clip)
+    for vuid, w, h in sizes:
+        assert f"{vuid}  {w}x{h}" in str(e.value)
+
+
 def test_real_clip_to_new_clip_matches_field_by_field(real_clip, tmp_path):
+    if _refused_for_mixed_sizes(real_clip):
+        return
     diffs, _ = new_clip_check(real_clip, tmp_path / "out", frame_cap=FRAME_CAP)
     assert diffs == []
 
 
 def test_real_clip_append_matches_and_keeps_every_flame_element(real_clip):
+    if _refused_for_mixed_sizes(real_clip):
+        return
     existing = [f.get("vuid") for f in video_track(load(real_clip)).findall("feeds/feed")]
     diffs, new = append_check(real_clip, frame_cap=FRAME_CAP)
     assert diffs == []
@@ -133,6 +168,8 @@ def test_real_clip_append_matches_and_keeps_every_flame_element(real_clip):
 
 
 def test_real_clip_append_to_an_append(real_clip):
+    if _refused_for_mixed_sizes(real_clip):
+        return
     diffs, new = append_check(real_clip, times=2, frame_cap=FRAME_CAP)
     assert diffs == [] and len(new) == 2
 
@@ -151,21 +188,16 @@ def test_planned_clip_covers_what_it_is_for(folder):
 
 
 def test_real_clip_exr_timecode_when_the_xml_has_none(real_clip, tmp_path):
-    """Known gap, pinned: when the source's XML has no <startTimecode> but its EXRs carry a
-    smpte:TimeCode (all of Autodesk's examples: frames 86400.. at 01:00:00:00), the Reader's
-    start_timecode is "" (it reads the XML only, by design) and the Writer writes the new frames
-    from 00:00:00:00. Fails once fixed (strict), forcing its removal."""
-    from .flame_compare import exr_attrs, source_media_pattern
+    """When the source's XML has no <startTimecode> but its EXRs carry a smpte:TimeCode (all of
+    Autodesk's examples: frames 86400.. at 01:00:00:00), the Reader takes the feed's first frame's
+    timecode and the Writer writes the new clip from it (was a pinned gap until 2026-10-29)."""
     fields = feed_fields(real_clip)
-    first_tc = exr_attrs(source_media_pattern(real_clip) % fields["first"]).get("smpte:TimeCode")
-    if fields["tc"] is not None or first_tc is None:
-        pytest.skip("source has an XML <startTimecode>, or no EXR timecode: not this case")
-    from .flame_compare import exr_frame_diffs
-    _, written = new_clip_check(real_clip, tmp_path / "out", frame_cap=FRAME_CAP)
-    diffs = exr_frame_diffs(written, load(written).find("tracks/track/feeds").get("currentVersion"),
-                            expected_colour=feed_fields(written)["colour"],
-                            source_pattern=source_media_pattern(real_clip), source_first=fields["first"])
-    if any("source frame has" in d for d in diffs):
-        pytest.xfail("known gap: EXR timecode not carried when the .clip XML has no <startTimecode>")
-    pytest.fail("the EXR timecode is carried now: the gap is fixed -- drop this test and source_tc=False "
-                "in tests/flame_roundtrip.py")
+    word = exr_attrs(source_media_pattern(real_clip) % fields["first"]).get("smpte:TimeCode")
+    rate = round(fields["edit_rate"] or fields["sample_rate"] or 24)
+    if fields["tc"] is not None or word is None or rate > 30:
+        pytest.skip("source has an XML <startTimecode>, or no EXR timecode (that can be read): not this case")
+    if _refused_for_mixed_sizes(real_clip):
+        return
+    diffs, written = new_clip_check(real_clip, tmp_path / "out", frame_cap=FRAME_CAP)
+    assert diffs == []
+    assert feed_fields(written)["tc"] == exr_tc_field(word[0], rate)

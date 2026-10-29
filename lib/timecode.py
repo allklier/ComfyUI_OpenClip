@@ -82,6 +82,22 @@ def smpte_bcd(ticks: int, rate: int, drop: bool = False) -> tuple[int, int] | No
     return value, 0
 
 
+def from_smpte_bcd(value: int, rate: int) -> str:
+    """The OpenEXR smpte:TimeCode time-and-flags word -> 'HH:MM:SS:FF' ('HH:MM:SS;FF' when the
+    drop-frame flag, bit 6, is set). Raises ValueError for a rate above 30 (smpte_bcd writes
+    none there, and a frame label can't be told apart from a field pair) or a label that isn't
+    a valid timecode at `rate`."""
+    if rate > 30:
+        raise ValueError(f"no EXR timecode is read at rate {rate} (above 30)")
+    digit = lambda shift, bits: (value >> shift) & ((1 << bits) - 1)
+    h = 10 * digit(28, 2) + digit(24, 4)
+    m = 10 * digit(20, 3) + digit(16, 4)
+    s = 10 * digit(12, 3) + digit(8, 4)
+    f = 10 * digit(4, 2) + digit(0, 4)
+    drop = bool(value & (1 << 6))
+    return normalize(f"{h:02d}:{m:02d}:{s:02d}{';' if drop else ':'}{f:02d}", rate)
+
+
 def _split(ticks: int, rate: int) -> tuple[int, int, int, int]:
     f = ticks % rate
     total_s = ticks // rate

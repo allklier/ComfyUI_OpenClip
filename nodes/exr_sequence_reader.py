@@ -4,8 +4,8 @@ import os
 import re
 from pathlib import Path
 
-from ..lib import image_io
-from ._clip_info import build_report, padding_of
+from ..lib import image_io, timecode
+from ._clip_info import bit_depth_of, build_report, padding_of
 from ._paths import resolve_clip_path
 
 # '####' (any run of '#') in a sequence path, the Blender/Nuke way of writing a frame token.
@@ -50,6 +50,19 @@ def _resolve_read_plan(sequence_path: str, start_frame: int, end_frame: int):
     return abs_pattern, resolved_start, resolved_end
 
 
+def _first_frame_timecode(metadata: dict, fps: float) -> str:
+    """smpte:TimeCode of the first frame read ("" when it has none). A plain sequence has no
+    clip start of its own, and the Writer numbers the new clip from the first frame read, so its
+    timecode is the one that belongs to that clip. Never derived from a frame number."""
+    value = metadata.get(image_io.TIMECODE_KEY)
+    if not value:
+        return ""
+    try:
+        return timecode.from_smpte_bcd(int(value[0]), timecode.tc_rate(fps))
+    except (ValueError, TypeError, IndexError):
+        return ""
+
+
 _LAST_READ_PLAN: dict[str, tuple[str, int]] = {}
 
 
@@ -61,8 +74,9 @@ def _fingerprint(abs_pattern: str, resolved_start: int) -> str:
 class ExrSequenceReader:
     """Reads a plain EXR frame sequence (no .clip wrapper), e.g. a Blender or Nuke render.
 
-    Same 9 outputs as OpenClipReader. Its clip_info has no version, schema version or
-    start timecode (""), since a plain sequence has none; clip_path is the sequence's
+    Same 9 outputs as OpenClipReader. Its clip_info has no version or schema version (""),
+    since a plain sequence has none; its start timecode is the first frame's EXR
+    smpte:TimeCode ("" when absent); clip_path is the sequence's
     folder and clip_name its filename stem, so a Writer fed this clip_info writes
     '<folder>/<stem>.clip'. fps and colour_space come from widgets, because Blender writes
     no frame rate into the EXR; a blank colour_space falls back to the file header
@@ -123,19 +137,21 @@ class ExrSequenceReader:
         folder, filename = os.path.split(abs_pattern)
         clip_name = filename[:image_io._FRAME_TOKEN_RE.search(filename).start()].rstrip("._")
         aov_handle = {"abs_pattern": abs_pattern, "start_frame": resolved_start, "end_frame": resolved_end, "clip_path": abs_pattern}
+        file_format = image_io.describe_frame(image_io.frame_path(abs_pattern, resolved_start))
         clip_info = {
             "clip_path": folder,
             "clip_name": clip_name,
             "version_name": "",
             "start_frame": resolved_start,
-            "start_timecode": "",
+            "start_timecode": _first_frame_timecode(metadata, fps),
             "fps": float(fps),
             "colour_space": colour_space,
             "format_version": "",
             "frame_padding": padding_of(abs_pattern),
+            "bit_depth": bit_depth_of(file_format),
             "metadata": metadata,
             "media_pattern": abs_pattern,
-            "file_format": image_io.describe_frame(image_io.frame_path(abs_pattern, resolved_start)),
+            "file_format": file_format,
             "width": width,
             "height": height,
             "frame_count": frame_count,

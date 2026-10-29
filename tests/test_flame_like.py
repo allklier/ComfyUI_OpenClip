@@ -32,6 +32,9 @@ CASES = [
     FlameLike("tc_pal", fps="25", tc="10:00:00:00"),
     FlameLike("tc_numbered_86400", fps="24", tc="01:00:00:00", start=86400, padding=8),
     FlameLike("tc_none", tc=None),                                     # no <startTimecode> at all
+    FlameLike("tc_exr_only", tc="01:00:00:00", xml_tc=False),            # timecode only in the EXRs (Autodesk)
+    FlameLike("tc_exr_only_numbered", fps="24", tc="01:00:00:00", xml_tc=False, start=86400, padding=8),
+    FlameLike("tc_exr_only_drop_2997", fps="29.97", tc="01:00:00;00", xml_tc=False),
     FlameLike("rate_23976_decimal", rate_xml="decimal", tc="01:00:00:00"),
     FlameLike("rate_25_decimal_v6", schema="6", fps="25", rate_xml="decimal", tc="00:00:10:00"),
     # frame numbering / padding
@@ -112,6 +115,23 @@ def test_comparison_helper_catches_a_lost_timecode(tmp_path):
     assert any("tc is (24, 0, 'NDF'), source says (24, 86400, 'NDF')" in d for d in diffs)
 
 
+def test_comparison_helper_catches_a_lost_exr_only_timecode_and_a_lost_bit_depth(tmp_path):
+    """The checks must fail when the EXR-only timecode (no XML <startTimecode>) is written as
+    00:00:00:00, and when a 32-bit source is written at 16 bits."""
+    from .flame_compare import exr_attrs, new_clip_diffs
+    case = FlameLike("guard_exr_tc", tc="01:00:00:00", xml_tc=False, depth=32)
+    clip = build(case, tmp_path / "src")
+    _, written = new_clip_check(clip, tmp_path / "out")
+    root = etree.parse(written)
+    root.find(".//startTimecode/nbTicks").text = "0"
+    root.find(".//storageFormat/channelsDepth").text = "16"
+    root.write(written)
+    word = exr_attrs(tmp_path / "src" / "shot" / "shot_v0.000001.exr")["smpte:TimeCode"][0]
+    diffs = new_clip_diffs(clip, written, first=1, count=3, exr_tc_word=word)
+    assert any("tc is (24, 0, 'NDF'), source says (24, 86400, 'NDF')" in d for d in diffs)
+    assert any("depth is 16, source says 32" in d for d in diffs)
+
+
 def test_comparison_helper_catches_a_changed_original_element(tmp_path):
     from .flame_compare import append_diffs
     clip = build(FlameLike("guard2"), tmp_path)
@@ -171,22 +191,49 @@ def test_aovs_from_a_flame_source_round_trip(tmp_path, layout):
     assert torch.allclose(m, matte, atol=1e-3) and torch.allclose(img, r["IMAGE"], atol=1e-3)
 
 
-def test_append_compares_the_format_with_the_current_version(tmp_path):
-    """Flame keeps versions of different sizes in one clip (a real clip on the share: v01-v05
-    1920x1088, v06-v07 1280x720). The format check compared with the *first* feed, so appending
-    at the current version's own size was refused."""
+def _mixed_size_clip(tmp_path):
+    """A Flame-like clip whose first version (v0) is 16x16 and current version (v1) 8x8."""
     clip = build(FlameLike("mixed", versions=("v0", "v1")), tmp_path)
     text = clip.read_text(encoding="utf-8")
     first_feed_end = text.index("</feed>")
     head = text[:first_feed_end].replace('<width type="uint">8</width>', '<width type="uint">16</width>')
     head = head.replace('<height type="uint">8</height>', '<height type="uint">16</height>')
     clip.write_text(head + text[first_feed_end:], encoding="utf-8")
-    diffs, new = append_check(clip)  # 8x8, the current version's size
-    assert diffs == [] and new == ["v2"]
+    return clip
 
+
+def test_append_compares_the_format_with_the_current_version(tmp_path):
+    """Flame keeps versions of different sizes in one clip (a real clip on the share: v01-v05
+    1920x1088, v06-v07 1280x720). The format check compared with the *first* feed, so appending
+    at the current version's own size was refused. The Reader refuses such a clip since
+    2026-10-29 (next test), so the Writer is driven directly here."""
     import torch
     from ComfyUI_OpenClip.nodes.writer import OpenClipWriter
-    from .flame_roundtrip import read
-    info = read(clip)["clip_info"]
+    clip = _mixed_size_clip(tmp_path)
+    kw = dict(clip_path=str(clip), clip_name="shot", fps=24000 / 1001, file_format="EXR")
+    out = OpenClipWriter().execute(IMAGE=torch.rand(3, 8, 8, 3), **kw)[0]  # 8x8, the current version's size
+    assert [f.get("vuid") for f in load(out).findall("tracks/track/feeds/feed")] == ["v0", "v1", "v2"]
     with pytest.raises(ValueError, match="width: existing=8 new=16"):
-        OpenClipWriter().execute(IMAGE=torch.rand(3, 16, 16, 3), clip_info=info)
+        OpenClipWriter().execute(IMAGE=torch.rand(3, 16, 16, 3), **kw)
+
+
+@pytest.mark.parametrize("version", ["current", "v0"])
+def test_reader_refuses_a_clip_whose_versions_differ_in_size(tmp_path, version):
+    """User decision 2026-10-29: stricter than Flame. Whichever version is asked for, the Reader
+    lists every version's size; XML only, and IS_CHANGED still never raises."""
+    from ComfyUI_OpenClip.nodes.reader import OpenClipReader
+    clip = _mixed_size_clip(tmp_path)
+    args = dict(clip_path=str(clip), version=version, start_frame=-1, end_frame=-1, path_from="", path_to="")
+    with pytest.raises(ValueError, match=r"VERSIONS OF DIFFERENT SIZES(.|\n)*v0  16x16\n  v1  8x8"):
+        OpenClipReader().execute(**args)
+    assert isinstance(OpenClipReader.IS_CHANGED(**args), str)
+
+
+def test_reader_skips_versions_with_no_recorded_size(tmp_path):
+    from .flame_roundtrip import read
+    clip = build(FlameLike("nosize", versions=("v0", "v1")), tmp_path)
+    text = clip.read_text(encoding="utf-8")
+    first_feed_end = text.index("</feed>")
+    head = text[:first_feed_end].replace('<width type="uint">8</width>', "")
+    clip.write_text(head + text[first_feed_end:], encoding="utf-8")
+    assert read(clip)["width"] == 8
