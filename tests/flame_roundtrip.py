@@ -20,12 +20,12 @@ def read(clip, frame_cap: int = -1) -> dict:
 
 
 def write(r: dict, source_fields: dict, clip_path: str = "") -> str:
-    """Writer with clip_info wired and every field on auto, bit depth included (clip_info carries
-    it, so the source's depth must come through without being set here); MASK is wired when the
-    source has alpha."""
+    """Writer with clip_info wired and every field on auto, bit depth and compression included
+    (clip_info carries them, so the source's must come through without being set here); MASK is
+    wired when the source has alpha."""
     return OpenClipWriter().execute(
         IMAGE=r["IMAGE"], MASK=r["MASK"] if source_fields["channels"] == 4 else None,
-        clip_info=r["clip_info"], clip_path=clip_path, file_format="EXR", exr_compression="PIZ",
+        clip_info=r["clip_info"], clip_path=clip_path, file_format="EXR",
     )[0]
 
 

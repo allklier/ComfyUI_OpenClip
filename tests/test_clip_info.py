@@ -588,6 +588,42 @@ def test_writer_bit_depth_auto_takes_clip_info_else_half(tmp_path):
     assert _written_depth(_write(clip_info=png, clip_path=str(tmp_path / "frompng"), exr_bit_depth="auto")) == "half"
 
 
+def _first_frame_attrs(clip) -> dict:
+    """Header attributes of the first frame of the clip's newest feed."""
+    feed = _feeds(clip)[-1]
+    frame = Path(clip).parent / feed.findtext("spans/span/path")
+    inp = oiio.ImageInput.open(re.sub(r"\[(\d+)-\d+\]", lambda m: m.group(1), str(frame)))
+    try:
+        return {a.name: a.value for a in inp.spec().extra_attribs}
+    finally:
+        inp.close()
+
+
+def test_writer_compression_auto_takes_clip_info_else_zip(tmp_path):
+    assert OpenClipWriter.INPUT_TYPES()["required"]["exr_compression"][0] == ["auto", "ZIP", "PIZ", "DWAB"]
+    src = _write(clip_path=str(tmp_path / "src"), clip_name="a", exr_compression="PIZ")
+    info = _read(src)["clip_info"]
+    assert info["compression"] == "PIZ"
+    comp = lambda clip: _first_frame_attrs(clip)["compression"]  # noqa: E731
+    assert comp(_write(clip_info=info, clip_path=str(tmp_path / "auto"), exr_compression="auto")) == "piz"
+    assert comp(_write(clip_info=info, clip_path=str(tmp_path / "typed"), exr_compression="DWAB")) == "dwab"
+    assert comp(_write(clip_path=str(tmp_path / "none"), clip_name="b", exr_compression="auto")) == "zip"
+    other = dict(info, compression="ZIPS")  # a compression the Writer doesn't offer -> default
+    assert comp(_write(clip_info=other, clip_path=str(tmp_path / "zips"), exr_compression="auto")) == "zip"
+    png = _read(_write(clip_path=str(tmp_path / "png"), clip_name="p", file_format="PNG"))["clip_info"]
+    assert png["compression"] == ""
+
+
+def test_writer_puts_the_clips_frame_rate_in_every_frame_header(tmp_path):
+    # As Flame does: the exact rate (24000/1001 for 23.976), replacing a carried value.
+    src = _write(clip_path=str(tmp_path / "src"), clip_name="a", fps=23.976)
+    assert tuple(_first_frame_attrs(src)["FramesPerSecond"]) == (24000, 1001)
+    info = _read(src)["clip_info"]
+    info["metadata"]["FramesPerSecond"] = (30, 1)
+    out = _write(clip_info=info, clip_path=str(tmp_path / "out"), fps=25.0)
+    assert tuple(_first_frame_attrs(out)["FramesPerSecond"]) == (25, 1)
+
+
 def test_clip_info_colour_feeds_colour_space_transform_same_as_input(tmp_path):
     pytest.importorskip("PyOpenColorIO")
     from ComfyUI_OpenClip.nodes.colour_space_transform import (

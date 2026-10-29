@@ -23,6 +23,8 @@ DEFAULT_FRAME_PADDING = 4
 DEFAULT_BIT_DEPTH = "half (16-bit)"
 # clip_info["bit_depth"] (the source's first EXR header) -> exr_bit_depth option.
 _BIT_DEPTHS = {"half": "half (16-bit)", "float": "float (32-bit)"}
+DEFAULT_COMPRESSION = "ZIP"
+COMPRESSIONS = ("ZIP", "PIZ", "DWAB")
 
 _AUTO = "auto = from clip_info, else "
 
@@ -51,7 +53,7 @@ class OpenClipWriter:
                 "file_format": (["EXR", "PNG"],),
                 # "auto" first, so it is the default; saved values stay valid (a combo is one widget).
                 "exr_bit_depth": (["auto", "half (16-bit)", "float (32-bit)"], {"tooltip": _AUTO + DEFAULT_BIT_DEPTH}),
-                "exr_compression": (["ZIP", "PIZ", "DWAB"],),
+                "exr_compression": (["auto", *COMPRESSIONS], {"tooltip": _AUTO + DEFAULT_COMPRESSION + " (also when the source's compression is not one of these)"}),
                 "aov_layout": (["Multichannel", "Separate Files"],),
                 "publish": ("BOOLEAN", {"default": False}),
             },
@@ -84,7 +86,7 @@ class OpenClipWriter:
         frame_padding: int = 0,
         file_format: str = "EXR",
         exr_bit_depth: str = "auto",
-        exr_compression: str = "ZIP",
+        exr_compression: str = "auto",
         aov_layout: str = "Multichannel",
         colour_space: str = "",
         layout: str = "Standard Flame",
@@ -113,6 +115,9 @@ class OpenClipWriter:
         colour_space = colour_space.strip() or info.get("colour_space") or DEFAULT_COLOUR_SPACE
         if exr_bit_depth == "auto":
             exr_bit_depth = _BIT_DEPTHS.get(info.get("bit_depth") or "", DEFAULT_BIT_DEPTH)
+        if exr_compression == "auto":
+            source = (info.get("compression") or "").upper()
+            exr_compression = source if source in COMPRESSIONS else DEFAULT_COMPRESSION
         format_version_typed = format_version.strip()
         format_version = _resolve_format_version(format_version, info)
         metadata = info.get("metadata")
@@ -187,6 +192,7 @@ class OpenClipWriter:
             abs_pattern, IMAGE, MASK, start_frame, file_format, exr_bit_depth, exr_compression,
             metadata=metadata, aov_entries=aov_chain, aov_layout=aov_layout,
             colour_space=colour_space, start_timecode=(tc_ticks, tc_rate, tc_drop),
+            fps_rational=openclip_xml.fps_to_rational(fps_label),
         )
 
         print(f"[OpenClipWriter] First frame written: {abs_pattern % start_frame}")

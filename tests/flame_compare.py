@@ -389,6 +389,14 @@ def exr_frame_diffs(written_clip, vuid: str, *, expected_colour: str,
                                f"{bcd_decode(src_tc[0])!r}")
         elif tc is not None:
             out.append(f"{Path(path).name}: smpte:TimeCode written at rate {rate} (can't be stored)")
+        want_fps = f["sample_rate"] or f["edit_rate"]
+        got_fps = attrs.get("FramesPerSecond")
+        if got_fps is None or Fraction(*got_fps) != want_fps:
+            out.append(f"{Path(path).name}: framesPerSecond {got_fps!r}, the feed's rate is {want_fps}")
+        if source_pattern is not None and i == 0:
+            src_comp = exr_attrs(source_pattern % source_first).get("compression")
+            if src_comp in ("zip", "piz", "dwab") and attrs.get("compression") != src_comp:
+                out.append(f"{Path(path).name}: compression {attrs.get('compression')!r}, source has {src_comp!r}")
         keys = ["openclip:ColorSpace"]
         if "autodeskColorSpace" in attrs or (
                 source_pattern is not None and "autodeskColorSpace" in exr_attrs(source_pattern % source_first)):

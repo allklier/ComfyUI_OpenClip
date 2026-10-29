@@ -13,6 +13,7 @@ Keys (all always present):
   format_version  Open Clip schema version ("" for a sequence)
   frame_padding   digits in the frame numbers
   bit_depth       "half"/"float" from the first frame's EXR header ("" for anything else, e.g. PNG)
+  compression     the first frame's EXR compression, e.g. "PIZ" ("" for anything else, e.g. PNG)
   metadata        EXR header attributes of the first frame (what CLIP_METADATA carried)
 For clip_report only:
   media_pattern, file_format ('EXR half PIZ'), width, height, frame_count,
@@ -40,6 +41,13 @@ def bit_depth_of(file_format: str) -> str:
     header); "" for anything else (PNG, integer EXR)."""
     parts = file_format.split()
     return parts[1] if len(parts) > 1 and parts[0] == "EXR" and parts[1] in ("half", "float") else ""
+
+
+def compression_of(file_format: str) -> str:
+    """'PIZ' etc. from a describe_frame() text such as 'EXR half PIZ'; "" when not an EXR or
+    the header names none."""
+    parts = file_format.split()
+    return parts[2] if len(parts) > 2 and parts[0] == "EXR" else ""
 
 
 def fps_text(fps: float) -> str:

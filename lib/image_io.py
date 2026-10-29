@@ -62,6 +62,8 @@ COLOUR_SPACE_BACKUP_KEY = "openclip:ColorSpace"
 # Flame writes its colour tag into its EXRs under this key (issue #7).
 AUTODESK_COLOUR_SPACE_KEY = "autodeskColorSpace"
 TIMECODE_KEY = "smpte:TimeCode"
+# OpenEXR's standard framesPerSecond (rational); OIIO 3.1.15 names it FramesPerSecond.
+FPS_KEY = "FramesPerSecond"
 
 
 def colour_space_from_metadata(metadata: dict) -> str:
@@ -282,6 +284,7 @@ def write_sequence(
     aov_layout: str = "Multichannel",
     colour_space: Optional[str] = None,
     start_timecode: Optional[tuple[int, int, bool]] = None,
+    fps_rational: Optional[tuple[int, int]] = None,
 ) -> None:
     """Write a frame sequence to disk, plus optional named AOV parts.
 
@@ -290,6 +293,8 @@ def write_sequence(
     `start_timecode` = (ticks, rate, drop): every EXR frame gets its own smpte:TimeCode,
     counting up one per frame from it; a carried smpte:TimeCode is dropped. Rates above 30
     get none (see timecode.smpte_bcd).
+    `fps_rational` = (numerator, denominator): written to every EXR frame as framesPerSecond,
+    as Flame does (e.g. 24000/1001 for 23.976); a carried value is dropped.
 
     `aov_entries`: list of (name, image, matte) -- exactly one of image ([N,H,W,C]) or
     matte ([N,H,W]) should be set per entry (the caller node validates this; here, image
@@ -326,7 +331,7 @@ def write_sequence(
     if n_frames > 1 and not _FRAME_TOKEN_RE.search(path_pattern):
         raise ValueError(f"path_pattern has no frame token but {n_frames} frames were given: {path_pattern}")
 
-    if colour_space is not None or start_timecode is not None:
+    if colour_space is not None or start_timecode is not None or fps_rational is not None:
         metadata = dict(metadata or {})
         if colour_space is not None:
             metadata[COLOUR_SPACE_KEY] = colour_space
@@ -335,12 +340,17 @@ def write_sequence(
         if start_timecode is not None:
             # The carried value is the source's first frame; ours is written per frame.
             metadata.pop(TIMECODE_KEY, None)
+        if fps_rational is not None:
+            for key in [k for k in metadata if k.lower() == FPS_KEY.lower()]:
+                del metadata[key]
 
     for i in range(n_frames):
         frame_num = start_frame + i
         filepath = frame_path(path_pattern, frame_num)
         mask = masks[i] if masks is not None else None
         typed = _timecode_attrs(start_timecode, i)
+        if fps_rational is not None:
+            typed.append((FPS_KEY, oiio.TypeRational, fps_rational))
         frame_aovs = [(name, _select_frame(image, i), _select_frame(matte, i)) for name, image, matte in aov_entries]
         inline_aovs = frame_aovs if aov_layout == "Multichannel" else None
         _write_frame(filepath, images[i], mask, file_format, exr_bit_depth, exr_compression, metadata,

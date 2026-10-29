@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 from ..lib import image_io, openclip_xml, timecode
-from ._clip_info import bit_depth_of, build_report, padding_of
+from ._clip_info import bit_depth_of, build_report, compression_of, padding_of
 from ._paths import resolve_clip_path
 
 # Guard against probing excessively broad path prefixes (e.g. root '/').
@@ -187,6 +187,7 @@ class OpenClipReader:
             "format_version": parsed.schema_version,
             "frame_padding": padding_of(abs_pattern),
             "bit_depth": bit_depth_of(file_format),
+            "compression": compression_of(file_format),
             "metadata": metadata,
             "media_pattern": abs_pattern,
             "file_format": file_format,
