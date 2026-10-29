@@ -205,3 +205,12 @@ def blender_multilayer_fixtures(tmp_path_factory) -> Path:
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "slow: heavier large-image/long-sequence tests; deselect with -m 'not slow'")
+
+
+def named_result(node_cls, result) -> dict:
+    """A node's result tuple as {output name: value}, so tests don't depend on slot order.
+    Also flattens clip_info's keys in as 'info.<key>' for brevity."""
+    out = dict(zip(node_cls.RETURN_NAMES, result))
+    for k, v in (out.get("clip_info") or {}).items():
+        out[f"info.{k}"] = v
+    return out

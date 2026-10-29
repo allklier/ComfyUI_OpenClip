@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 from ..lib import image_io
+from ._clip_info import build_report, padding_of
 from ._paths import resolve_clip_path
 
 # '####' (any run of '#') in a sequence path, the Blender/Nuke way of writing a frame token.
@@ -60,14 +61,12 @@ def _fingerprint(abs_pattern: str, resolved_start: int) -> str:
 class ExrSequenceReader:
     """Reads a plain EXR frame sequence (no .clip wrapper), e.g. a Blender or Nuke render.
 
-    Outputs only what a plain sequence actually has -- no format_version, version_name
-    or available_versions, since there's no notion of an Open Clip version here; a node
-    that needs those (e.g. OpenClipWriter) supplies its own default rather than taking an
-    empty placeholder from this reader. clip_path and clip_name are genuine derived
-    values, not placeholders: clip_path is the sequence's folder and clip_name its
-    filename stem, so wiring them into OpenClipWriter writes '<folder>/<stem>.clip'.
-    fps and colour_space come from widgets, because Blender writes no frame rate into
-    the EXR; a blank colour_space falls back to the file header.
+    Same 9 outputs as OpenClipReader. Its clip_info has no version, schema version or
+    start timecode (""), since a plain sequence has none; clip_path is the sequence's
+    folder and clip_name its filename stem, so a Writer fed this clip_info writes
+    '<folder>/<stem>.clip'. fps and colour_space come from widgets, because Blender writes
+    no frame rate into the EXR; a blank colour_space falls back to the file header
+    (autodeskColorSpace, openclip:ColorSpace, oiio:ColorSpace).
 
     `layer` picks the beauty from a single-part multilayer EXR (Blender writes
     '<view layer>.<pass>.<channel>', e.g. 'CamelMatte.Combined'). Blank reads plain
@@ -92,8 +91,8 @@ class ExrSequenceReader:
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK", "INT", "INT", "INT", "INT", "STRING", "STRING", "CLIP_METADATA", "AOV_HANDLE", "STRING", "FLOAT", "STRING")
-    RETURN_NAMES = ("IMAGE", "MASK", "frame_count", "width", "height", "start_frame", "clip_path", "clip_name", "metadata", "aov_handle", "colour_space", "fps", "available_aovs")
+    RETURN_TYPES = ("IMAGE", "MASK", "CLIP_INFO", "AOV_HANDLE", "INT", "INT", "INT", "FLOAT", "STRING")
+    RETURN_NAMES = ("IMAGE", "MASK", "clip_info", "aov_handle", "frame_count", "width", "height", "fps", "clip_report")
     OUTPUT_NODE = True
     FUNCTION = "execute"
     CATEGORY = "OpenClip"
@@ -118,19 +117,36 @@ class ExrSequenceReader:
         images, masks, metadata = image_io.read_sequence(
             abs_pattern, resolved_start, resolved_end, load_alpha=True, layer=layer.strip()
         )
-        colour_space = colour_space.strip() or metadata.get(image_io.COLOUR_SPACE_BACKUP_KEY) or metadata.get(image_io.COLOUR_SPACE_KEY, "")
+        colour_space = colour_space.strip() or image_io.colour_space_from_metadata(metadata)
 
         frame_count, height, width = images.shape[0], images.shape[1], images.shape[2]
         folder, filename = os.path.split(abs_pattern)
         clip_name = filename[:image_io._FRAME_TOKEN_RE.search(filename).start()].rstrip("._")
         aov_handle = {"abs_pattern": abs_pattern, "start_frame": resolved_start, "end_frame": resolved_end, "clip_path": abs_pattern}
-        available_aovs = "\n".join(image_io.probe_aov_names(abs_pattern, resolved_start))
+        clip_info = {
+            "clip_path": folder,
+            "clip_name": clip_name,
+            "version_name": "",
+            "start_frame": resolved_start,
+            "start_timecode": "",
+            "fps": float(fps),
+            "colour_space": colour_space,
+            "format_version": "",
+            "frame_padding": padding_of(abs_pattern),
+            "metadata": metadata,
+            "media_pattern": abs_pattern,
+            "file_format": image_io.describe_frame(image_io.frame_path(abs_pattern, resolved_start)),
+            "width": width,
+            "height": height,
+            "frame_count": frame_count,
+            "versions": [],
+            "current_version": "",
+            "aovs": image_io.probe_aov_names(abs_pattern, resolved_start),
+        }
+        clip_report = build_report(clip_info)
         return {
-            "ui": {"available_aovs": [available_aovs]},
-            "result": (
-                images, masks, frame_count, width, height, resolved_start, folder, clip_name,
-                metadata, aov_handle, colour_space, float(fps), available_aovs,
-            ),
+            "ui": {"clip_report": [clip_report]},
+            "result": (images, masks, clip_info, aov_handle, frame_count, width, height, float(fps), clip_report),
         }
 
     # Same contract as OpenClipReader._UNFINGERPRINTABLE.

@@ -8,13 +8,19 @@ from typing import Optional
 
 import torch
 
-from ..lib import image_io, openclip_xml, package_layout
+from ..lib import image_io, openclip_xml, package_layout, timecode
 from ..lib.openclip_xml import ClipFormat, ClipSpan, ClipVersion
 
 # Root <clip version="..."> values accepted for a new clip. 6 is the default: Flame 2024
 # imported the identical file once version="8" was changed to "6" (issue #4).
 FORMAT_VERSIONS = ("5", "6", "7", "8", "9")
 DEFAULT_FORMAT_VERSION = "6"
+DEFAULT_COLOUR_SPACE = "Rec.709 video"
+DEFAULT_FPS = 24.0
+DEFAULT_START_FRAME = 1
+DEFAULT_FRAME_PADDING = 4
+
+_AUTO = "auto = from clip_info, else "
 
 
 class OpenClipWriter:
@@ -23,15 +29,21 @@ class OpenClipWriter:
         return {
             "required": {
                 "IMAGE": ("IMAGE",),
-                "clip_path": ("STRING", {"default": ""}),
-                "clip_name": ("STRING", {"default": ""}),
+                # Fields with an "auto" value take it from clip_info when connected (else the
+                # stated default); anything else overrides clip_info. See nodes/CLAUDE.md.
+                "clip_path": ("STRING", {"default": "", "tooltip": "Folder or .clip file. Empty: " + _AUTO + "required"}),
+                "clip_name": ("STRING", {"default": "", "tooltip": "Empty: " + _AUTO + "required. Never trimmed."}),
                 "clip_filename": ("STRING", {"default": "$(path)/$(clip_name).clip"}),
+                # Never taken from clip_info: "next" is the safe default (Flame-style).
                 "version_name": ("STRING", {"default": "next"}),
                 "overwrite": ("BOOLEAN", {"default": False}),
                 "include_version_in_filename": ("BOOLEAN", {"default": True}),
-                "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 120.0, "step": 0.001}),
-                "start_frame": ("INT", {"default": 1, "min": 0, "max": 999999}),
-                "frame_padding": ("INT", {"default": 4, "min": 1, "max": 9}),
+                "fps": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 120.0, "step": 0.001, "tooltip": "0: " + _AUTO + "24"}),
+                "start_frame": ("INT", {"default": -1, "min": -1, "max": 999999, "tooltip": "-1: " + _AUTO + "1"}),
+                "start_timecode": ("STRING", {"default": "", "tooltip": "HH:MM:SS:FF (;FF drop-frame). Empty: from clip_info, else the existing clip's, else 00:00:00:00"}),
+                "frame_padding": ("INT", {"default": 0, "min": 0, "max": 9, "tooltip": "0: " + _AUTO + "4"}),
+                "colour_space": ("STRING", {"default": "", "tooltip": "Empty: " + _AUTO + DEFAULT_COLOUR_SPACE}),
+                "format_version": ("STRING", {"default": "", "tooltip": "Open Clip schema 5-9 for a new clip. Empty: " + _AUTO + DEFAULT_FORMAT_VERSION}),
                 "file_format": (["EXR", "PNG"],),
                 "exr_bit_depth": (["half (16-bit)", "float (32-bit)"],),
                 "exr_compression": (["ZIP", "PIZ", "DWAB"],),
@@ -40,15 +52,8 @@ class OpenClipWriter:
             },
             "optional": {
                 "MASK": ("MASK",),
-                "CLIP_METADATA": ("CLIP_METADATA",),
+                "clip_info": ("CLIP_INFO",),
                 "aov_chain": ("AOV_WRITE_CHAIN",),
-                "colour_space": ("STRING", {"default": "Rec.709 video"}),
-                # Open Clip schema version for a *new* .clip (root <clip version="...">); wire
-                # OpenClipReader.format_version here to match a source clip. Appending to an
-                # existing .clip always keeps that file's own version. Default 6 because Flame
-                # 2024 rejects version="8" clips (issue #4). Appended last so saved workflows'
-                # positional widgets_values stay valid.
-                "format_version": ("STRING", {"default": DEFAULT_FORMAT_VERSION}),
             },
             "hidden": {
                 "extra_pnginfo": "EXTRA_PNGINFO",
@@ -65,33 +70,48 @@ class OpenClipWriter:
     def execute(
         self,
         IMAGE: torch.Tensor,
-        clip_path: str,
-        clip_name: str,
-        clip_filename: str,
-        version_name: str,
-        fps: float,
-        start_frame: int,
-        frame_padding: int,
-        file_format: str,
-        exr_bit_depth: str,
-        exr_compression: str,
+        clip_path: str = "",
+        clip_name: str = "",
+        clip_filename: str = "$(path)/$(clip_name).clip",
+        version_name: str = "next",
+        fps: float = 0.0,
+        start_frame: int = -1,
+        frame_padding: int = 0,
+        file_format: str = "EXR",
+        exr_bit_depth: str = "half (16-bit)",
+        exr_compression: str = "ZIP",
         aov_layout: str = "Multichannel",
-        colour_space: str = "Rec.709 video",
+        colour_space: str = "",
         layout: str = "Standard Flame",
         publish: bool = False,
         overwrite: bool = False,
         include_version_in_filename: bool = True,
         MASK: Optional[torch.Tensor] = None,
-        CLIP_METADATA: Optional[dict] = None,
+        clip_info: Optional[dict] = None,
         aov_chain: Optional[list] = None,
-        format_version: str = DEFAULT_FORMAT_VERSION,
+        format_version: str = "",
+        start_timecode: str = "",
         extra_pnginfo: Optional[dict] = None,
         prompt=None,
     ):
+        info = clip_info or {}
         _check_name_component(version_name, "version_name")
-        output_dir, clip_name = _resolve_destination(
-            clip_path.strip(), clip_name.strip(), clip_filename.strip()
-        )
+
+        # --- resolve every auto field (see INPUT_TYPES) ---
+        clip_path_in = clip_path.strip() or info.get("clip_path", "")
+        # Names are never stripped: Flame keeps leading/trailing spaces (issue #7). A
+        # whitespace-only widget still counts as empty.
+        clip_name_in = clip_name if clip_name.strip() else info.get("clip_name", "")
+        fps = fps if fps > 0 else float(info.get("fps") or DEFAULT_FPS)
+        start_frame = start_frame if start_frame >= 0 else int(info.get("start_frame", DEFAULT_START_FRAME))
+        frame_padding = frame_padding if frame_padding > 0 else int(info.get("frame_padding") or DEFAULT_FRAME_PADDING)
+        colour_space = colour_space.strip() or info.get("colour_space") or DEFAULT_COLOUR_SPACE
+        format_version_typed = format_version.strip()
+        format_version = _resolve_format_version(format_version, info)
+        metadata = info.get("metadata")
+
+        output_dir, clip_name = _resolve_destination(clip_path_in, clip_name_in, clip_filename.strip())
+        output_dir, clip_name = _same_file_as_source(output_dir, clip_name, info.get("clip_path", ""))
 
         # clip_file's location doesn't depend on version_name in any layout (see
         # package_layout.build), so this probe build only locates it to check existing
@@ -118,12 +138,11 @@ class OpenClipWriter:
         # Everything that can reject this write is checked before any directory or frame
         # touches the disk, so a refused run never leaves orphan frames behind.
         fps_label = openclip_xml.fps_label_from_float(fps)
-        format_version = format_version.strip()
-        if format_version and format_version not in FORMAT_VERSIONS:
-            raise ValueError(
-                f"[OpenClipWriter] format_version '{format_version}' is not supported. Valid: {list(FORMAT_VERSIONS)}"
-            )
-        if existing is not None and format_version and format_version != existing.schema_version:
+        tc_rate = timecode.tc_rate(fps)
+        start_tc = _resolve_start_timecode(start_timecode, info, existing, tc_rate)
+        if existing is not None:
+            _check_append_timing(existing, probe.clip_file, start_tc, start_frame, tc_rate)
+        if existing is not None and format_version_typed and format_version != existing.schema_version:
             print(
                 f"[OpenClipWriter] WARNING: format_version '{format_version}' ignored -- appending to "
                 f"'{probe.clip_file}', which keeps its own schema version '{existing.schema_version}'"
@@ -140,10 +159,7 @@ class OpenClipWriter:
             compression=exr_compression,
         )
         if existing is not None:
-            mismatches = _format_mismatches(openclip_xml.read_format(str(probe.clip_file)), fmt)
-            if mismatches:
-                detail = ", ".join(f"{k}: existing={old} new={nw}" for k, old, nw in mismatches)
-                raise ValueError(f"Format mismatch with '{probe.clip_file.name}': {detail}")
+            _raise_on_format_mismatch(probe.clip_file, fmt)
 
         paths = package_layout.build(
             layout, output_dir, clip_name, version_name, file_format, frame_padding,
@@ -157,10 +173,12 @@ class OpenClipWriter:
                 # Versions written before 2026-10-27 used "<clip>.<version>" frame names.
                 _delete_existing_frames(paths.media_dir, f"{clip_name}.{version_name}", file_format)
 
+        tc_ticks, tc_drop = timecode.parse_tc(start_tc, tc_rate)
         abs_pattern = str(paths.media_dir / f"{paths.frame_stem}.%0{frame_padding}d.{file_format.lower()}")
         image_io.write_sequence(
             abs_pattern, IMAGE, MASK, start_frame, file_format, exr_bit_depth, exr_compression,
-            metadata=CLIP_METADATA, aov_entries=aov_chain, aov_layout=aov_layout,
+            metadata=metadata, aov_entries=aov_chain, aov_layout=aov_layout,
+            colour_space=colour_space, start_timecode=(tc_ticks, tc_rate, tc_drop),
         )
 
         print(f"[OpenClipWriter] First frame written: {abs_pattern % start_frame}")
@@ -172,6 +190,7 @@ class OpenClipWriter:
             name=version_name,
             spans=[ClipSpan(path=abs_pattern, start_frame=start_frame, duration=n_frames)],
             publish_path=sidecar_rel,
+            start_timecode=start_tc,
         )
 
         if paths.clip_file.exists():
@@ -179,12 +198,110 @@ class OpenClipWriter:
         else:
             xml_bytes = openclip_xml.generate(
                 clip_name, {version_name: new_version}, version_name, fmt,
-                schema_version=format_version or DEFAULT_FORMAT_VERSION,
+                schema_version=format_version,
             )
         paths.clip_file.write_bytes(xml_bytes)
         print(f"[OpenClipWriter] Wrote clip file: {paths.clip_file}")
 
         return (str(paths.clip_file),)
+
+
+def _resolve_format_version(widget: str, info: dict) -> str:
+    """Widget value (validated) > clip_info's schema version > 6."""
+    value = widget.strip()
+    if value:
+        if value not in FORMAT_VERSIONS:
+            raise ValueError(
+                f"[OpenClipWriter] format_version '{value}' is not supported. Valid: {list(FORMAT_VERSIONS)}"
+            )
+        return value
+    from_info = str(info.get("format_version") or "")
+    if from_info in FORMAT_VERSIONS:
+        return from_info
+    if from_info:
+        print(f"[OpenClipWriter] WARNING: clip_info format_version '{from_info}' is not writable; using {DEFAULT_FORMAT_VERSION}")
+    return DEFAULT_FORMAT_VERSION
+
+
+def _same_file_as_source(output_dir: str, clip_name: str, source: str) -> tuple[str, str]:
+    """When the destination is the very .clip clip_info was read from, use that file's own
+    folder and name verbatim, so the write appends to exactly it (issue #7)."""
+    if not source.lower().endswith(".clip"):
+        return output_dir, clip_name
+    candidate = Path(output_dir) / f"{clip_name}.clip"
+    try:
+        if os.path.samefile(candidate, source):
+            src = Path(source)
+            return str(src.parent), src.name[: -len(".clip")]
+    except OSError:
+        pass  # either file missing: nothing to match
+    return output_dir, clip_name
+
+
+def _resolve_start_timecode(widget: str, info: dict, existing, rate: int) -> str:
+    """Widget > clip_info > the existing clip's current feed (when appending) > 00:00:00:00."""
+    for what, value in (("start_timecode", widget.strip()), ("clip_info start_timecode", info.get("start_timecode") or "")):
+        if value:
+            try:
+                return timecode.normalize(value, rate)
+            except ValueError as e:
+                raise ValueError(f"[OpenClipWriter] {what}: {e}") from None
+    if existing is not None:
+        return _existing_timecode(existing)
+    return timecode.ZERO
+
+
+def _existing_timecode(existing) -> str:
+    current = existing.versions.get(existing.current_version)
+    # A feed with no <startTimecode> is taken as 00:00:00:00.
+    return (current.start_timecode if current else "") or timecode.ZERO
+
+
+def _check_append_timing(existing, clip_file: Path, start_tc: str, start_frame: int, rate: int) -> None:
+    """Issue #7 rules for adding a version to an existing clip (also with overwrite on):
+    - start timecodes differ -> error (Flame would place the versions apart in time);
+    - same real timecode, different start frame -> warning only (timecode places it);
+    - both 00:00:00:00 and different start frames -> error (nothing else aligns them)."""
+    ex_tc = _existing_timecode(existing)
+    if ex_tc != start_tc:
+        raise ValueError(
+            f"[OpenClipWriter] START TIMECODE MISMATCH — refusing to write.\n"
+            f"'{clip_file}' starts at {ex_tc} (current version '{existing.current_version}'), "
+            f"this write at {start_tc}. Flame would place the two versions apart in time.\n"
+            f"Fix by one of:\n"
+            f"  - set start_timecode to {ex_tc}\n"
+            f"  - set a new clip_name to write a separate clip"
+        )
+    current = existing.versions.get(existing.current_version)
+    if current is None or not current.spans:
+        return
+    ex_start = current.spans[0].start_frame
+    if ex_start == start_frame:
+        return
+    if timecode.parse_tc(start_tc, rate)[0] == 0:
+        raise ValueError(
+            f"[OpenClipWriter] START FRAME MISMATCH — refusing to write.\n"
+            f"'{clip_file}' starts at frame {ex_start}, this write at {start_frame}, and both start "
+            f"at timecode {start_tc}, so nothing would line the versions up.\n"
+            f"Fix by one of:\n"
+            f"  - set start_frame to {ex_start}\n"
+            f"  - set start_timecode to the clip's real timecode\n"
+            f"  - set a new clip_name to write a separate clip"
+        )
+    print(
+        f"[OpenClipWriter] WARNING: start frame {start_frame} differs from '{clip_file.name}' "
+        f"({ex_start}); both start at timecode {start_tc}, so the versions still line up."
+    )
+
+
+def _raise_on_format_mismatch(clip_file: Path, fmt: ClipFormat) -> None:
+    mismatches = _format_mismatches(openclip_xml.read_format(str(clip_file)), fmt)
+    if mismatches:
+        detail = ", ".join(f"{k}: existing={old} new={nw}" for k, old, nw in mismatches)
+        raise ValueError(
+            f"Format mismatch with '{clip_file.name}': {detail}. "
+            f"To keep this result, set a new clip_name to write a separate clip."
+        )
 
 
 def _merge_version(
@@ -194,11 +311,7 @@ def _merge_version(
 ) -> bytes:
     """Add new_version to an existing clip in place, keeping everything else in the file
     (schema version, Flame's track/version metadata, other tracks) -- see append_version."""
-    existing_fmt = openclip_xml.read_format(str(clip_file))
-    mismatches = _format_mismatches(existing_fmt, fmt)
-    if mismatches:
-        detail = ", ".join(f"{k}: existing={old} new={nw}" for k, old, nw in mismatches)
-        raise ValueError(f"Format mismatch with '{clip_file.name}': {detail}")
+    _raise_on_format_mismatch(clip_file, fmt)
     return openclip_xml.append_version(str(clip_file), new_version, fmt)
 
 
@@ -253,12 +366,12 @@ def _resolve_destination(clip_path_in: str, clip_name_in: str, clip_filename: st
 
     if "$(path)" in expanded:
         if not folder:
-            raise ValueError("clip_path is required when clip_filename contains $(path)")
+            raise ValueError("clip_path is required when clip_filename contains $(path) (type it, or connect clip_info)")
         expanded = expanded.replace("$(path)", folder)
 
     if "$(clip_name)" in expanded:
         if not clip_name_in:
-            raise ValueError("clip_name is required when clip_filename contains $(clip_name)")
+            raise ValueError("clip_name is required when clip_filename contains $(clip_name) (type it, or connect clip_info)")
         _check_name_component(clip_name_in, "clip_name")
         expanded = expanded.replace("$(clip_name)", clip_name_in)
 

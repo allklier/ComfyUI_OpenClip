@@ -1,5 +1,5 @@
 """Writer / Reader / XML cases with thin or no coverage elsewhere: clip_filename tokens,
-fps edge cases, wired colour_space, CLIP_METADATA carry-through, version-collision message,
+fps edge cases, wired colour_space, header metadata carry-through (clip_info), version-collision message,
 path remap through the Reader node, static-image clips, overwrite scoping, publish edge cases.
 """
 from __future__ import annotations
@@ -148,7 +148,7 @@ def test_fps_to_rational_unknown_label_defaults_to_24():
 @pytest.mark.parametrize("fps, label", [(24.0, "24"), (25.0, "25"), (30000 / 1001, "29.97"), (60.0, "60")])
 def test_writer_to_reader_fps_round_trip(tmp_path, fps, label):
     num, den = openclip_xml._FPS_TABLE[label]
-    assert _read(_write(tmp_path, fps=fps))[13] == pytest.approx(num / den)
+    assert _read(_write(tmp_path, fps=fps))[7] == pytest.approx(num / den)
 
 
 # --- wired colour_space -----------------------------------------------------------------------------
@@ -166,11 +166,14 @@ def test_writer_colour_space_input_lands_in_the_clip_xml(tmp_path):
     assert openclip_xml.read_format(clip).colour_space == "ACEScg"
 
 
-def test_writer_colour_space_xml_pipe_is_independent_of_the_exr_header_pipe(tmp_path):
-    # The XML <colourSpace> and the EXR-header colour space (via CLIP_METADATA) are different pipes.
-    clip = _write(tmp_path, colour_space="ACEScg", CLIP_METADATA={"oiio:ColorSpace": "ARRI LogC4 / AWG4"})
+def test_writer_colour_space_wins_over_carried_header_colour_in_xml_and_exr(tmp_path):
+    # 2.0 (issue #7): one colour value, written to the XML tag and the EXR keys alike; a
+    # carried header colour no longer survives beside a different XML tag (was two pipes in 1.x).
+    clip = _write(tmp_path, colour_space="ACEScg", clip_info={"metadata": {"oiio:ColorSpace": "ARRI LogC4 / AWG4"}})
     assert openclip_xml.read_format(clip).colour_space == "ACEScg"
-    assert _read(clip)[12] == "ARRI LogC4 / AWG4"
+    info = _read(clip)[2]
+    assert info["colour_space"] == "ACEScg"
+    assert info["metadata"][image_io.COLOUR_SPACE_BACKUP_KEY] == "ACEScg"
 
 
 def test_writer_colour_space_of_a_second_version_is_not_validated_against_the_first(tmp_path):
@@ -182,31 +185,31 @@ def test_writer_colour_space_of_a_second_version_is_not_validated_against_the_fi
     assert spaces == ["ACEScg", "sRGB"]
 
 
-# --- CLIP_METADATA carry-through --------------------------------------------------------------------------
+# --- header metadata carry-through (clip_info["metadata"]) --------------------------------------------------------------------------
 
 
 def test_metadata_scalars_round_trip_through_writer_and_reader(tmp_path):
     meta = {"Artist": "jan", "take": 7, "exposure": 1.5}
-    out = _read(_write(tmp_path, CLIP_METADATA=meta))[10]
+    out = _read(_write(tmp_path, clip_info={"metadata": meta}))[2]["metadata"]
     assert out["Artist"] == "jan" and out["take"] == 7 and out["exposure"] == pytest.approx(1.5)
 
 
 def test_writer_format_options_beat_carried_metadata(tmp_path):
-    clip = _write(tmp_path, exr_compression="PIZ", CLIP_METADATA={"compression": "zip"})
-    assert _read(clip)[10]["compression"] == "piz"
+    clip = _write(tmp_path, exr_compression="PIZ", clip_info={"metadata": {"compression": "zip"}})
+    assert _read(clip)[2]["metadata"]["compression"] == "piz"
 
 
 def test_unwritable_metadata_values_are_skipped_not_fatal(tmp_path):
-    out = _read(_write(tmp_path, CLIP_METADATA={"ok": "yes", "bad": {"nested": 1}, "worse": object()}))[10]
+    out = _read(_write(tmp_path, clip_info={"metadata": {"ok": "yes", "bad": {"nested": 1}, "worse": object()}}))[2]["metadata"]
     assert out["ok"] == "yes" and "bad" not in out and "worse" not in out
 
 
 def test_empty_metadata_dict_is_harmless(tmp_path):
-    assert _read(_write(tmp_path, CLIP_METADATA={}))[2] == 2
+    assert _read(_write(tmp_path, clip_info={"metadata": {}}))[4] == 2
 
 
 def test_metadata_is_carried_into_every_frame_not_only_the_first(tmp_path):
-    clip = _write(tmp_path, n=3, CLIP_METADATA={"Artist": "jan"})
+    clip = _write(tmp_path, n=3, clip_info={"metadata": {"Artist": "jan"}})
     media = Path(clip).parent / "versions" / "v001"
     for f in sorted(media.glob("*.exr")):
         _, _, meta = image_io.read_sequence(str(f), 0, 0, load_alpha=True)
@@ -214,8 +217,8 @@ def test_metadata_is_carried_into_every_frame_not_only_the_first(tmp_path):
 
 
 def test_metadata_does_not_leak_into_png_output(tmp_path):
-    clip = _write(tmp_path, file_format="PNG", CLIP_METADATA={"Artist": "jan"})
-    assert _read(clip)[2] == 2
+    clip = _write(tmp_path, file_format="PNG", clip_info={"metadata": {"Artist": "jan"}})
+    assert _read(clip)[4] == 2
 
 
 # --- version collision / overwrite ------------------------------------------------------------------------
@@ -320,13 +323,13 @@ def _clip_with_absolute_media(tmp_path, media_root: str):
 
 def test_reader_auto_remaps_a_foreign_absolute_media_root(tmp_path):
     clip, _ = _clip_with_absolute_media(tmp_path, "/Volumes/Gone/jobs/c")
-    assert _read(clip)[2] == 2
+    assert _read(clip)[4] == 2
 
 
 def test_reader_explicit_path_remap(tmp_path):
     clip, pkg = _clip_with_absolute_media(tmp_path, "/nonexistent_root/zz")
     out = _read(clip, path_from="/nonexistent_root/zz", path_to=str(pkg))
-    assert out[2] == 2
+    assert out[4] == 2
 
 
 def test_reader_wrong_explicit_remap_fails_loudly(tmp_path):
@@ -346,7 +349,7 @@ def test_reader_reads_a_static_still_clip(tmp_path):
         "<spans><span><path encoding='file'>still.png</path></span></spans></feed></feeds></track></tracks></clip>"
     )
     out = _read(str(media / "still.clip"))
-    assert out[0].shape == (1, 8, 8, 3) and out[2] == 1
+    assert out[0].shape == (1, 8, 8, 3) and out[4] == 1
 
 
 def test_reader_uses_only_the_first_span_of_a_multi_span_version(tmp_path):
@@ -358,7 +361,7 @@ def test_reader_uses_only_the_first_span_of_a_multi_span_version(tmp_path):
     versions = {"v001": ClipVersion(uid="v001", name="v001", spans=[
         ClipSpan(path="m/a.%04d.exr", start_frame=1, duration=2), ClipSpan(path="m/b.%04d.exr", start_frame=10, duration=3)])}
     (pkg / "c.clip").write_bytes(openclip_xml.generate("c", versions, "v001"))
-    assert _read(str(pkg / "c.clip"))[2] == 2
+    assert _read(str(pkg / "c.clip"))[4] == 2
 
 
 def test_parse_generate_round_trip_keeps_a_multi_span_version(tmp_path):
@@ -373,8 +376,8 @@ def test_parse_generate_round_trip_keeps_a_multi_span_version(tmp_path):
 def test_reader_available_versions_text_for_many_versions_is_sorted_with_current_marked(tmp_path):
     for _ in range(3):
         clip = _write(tmp_path, n=1)
-    lines = _read(clip)[14].split("\n")
-    assert lines == ["v001", "v002", "v003  (current)"]
+    report = _read(clip)[8]
+    assert "VERSIONS\n  v001\n  v002\n  v003  (current)  ← loaded\n" in report
 
 
 def test_reader_schema_version_output_round_trips_v9_fixture_name(v9_single_clip):
@@ -478,7 +481,7 @@ def test_new_clip_defaults_to_schema_version_6(tmp_path):
 def test_new_clip_uses_explicit_format_version(tmp_path, value, expected):
     clip = _write(tmp_path, format_version=value)
     assert etree.parse(clip).getroot().get("version") == expected
-    assert _read(clip)[5] == expected  # Reader.format_version -> wireable straight back in
+    assert _read(clip)[2]["format_version"] == expected  # carried on in clip_info
 
 
 @pytest.mark.parametrize("bad", ["10", "v8", "8.0", "4"])
@@ -523,7 +526,7 @@ def test_append_to_flame_clip_preserves_schema_and_flame_metadata(tmp_path, sche
     # The audio track and Flame's own text (including its double-encoded "AutodeskÂ®") are untouched.
     assert [f.get("vuid") for f in root.find("tracks").findall("track")[1].find("feeds")] == ["v01"]
     assert root.findtext("userData/appName") == "AutodeskÂ® FlameÂ®"
-    assert _read(str(clip), version="v03")[2] == 2
+    assert _read(str(clip), version="v03")[4] == 2
 
 
 def test_append_creates_versions_block_when_the_clip_has_none(tmp_path):
@@ -568,12 +571,11 @@ def test_matching_format_version_on_append_does_not_warn(tmp_path, capsys):
     assert "WARNING" not in capsys.readouterr().out
 
 
-def test_format_version_input_is_optional_and_last():
-    # Appended last so saved workflows' positional widgets_values stay valid.
+def test_format_version_is_a_widget_defaulting_to_auto():
+    # 2.0: a widget whose empty value means "from clip_info, else 6"; no longer a socket.
     types = OpenClipWriter.INPUT_TYPES()
-    assert list(types["optional"])[-1] == "format_version"
-    assert types["optional"]["format_version"] == ("STRING", {"default": "6"})
-    assert "format_version" not in types["required"]
+    assert types["required"]["format_version"][1]["default"] == ""
+    assert "format_version" not in types["optional"]
 
 
 # --- Standard Flame layout change (2026-10-27): old-layout clips stay readable and appendable ---
@@ -600,7 +602,7 @@ def test_append_to_legacy_standard_clip_keeps_the_old_layout(tmp_path, version_i
     stem = "s_v002" if version_in_filename else "s"
     assert (tmp_path / "s" / "versions" / "v002" / f"{stem}.0001.exr").exists()
     for v in ("v001", "v002"):
-        assert _read(str(clip), version=v)[2] == 2
+        assert _read(str(clip), version=v)[4] == 2
 
 
 def test_overwrite_with_version_in_filename_also_removes_old_dot_named_frames(tmp_path):
@@ -608,12 +610,14 @@ def test_overwrite_with_version_in_filename_also_removes_old_dot_named_frames(tm
     _write(tmp_path, version_name="v001", overwrite=True, include_version_in_filename=True)
     names = sorted(p.name for p in (tmp_path / "s" / "versions" / "v001").glob("*.exr"))
     assert names == ["s_v001.0001.exr", "s_v001.0002.exr"]
-    assert _read(str(clip), version="v001")[2] == 2
+    assert _read(str(clip), version="v001")[4] == 2
 
 
-def test_writer_start_frame_defaults_to_flames_1():
-    # Flame numbers its own renders from 1; 1001 is the Nuke/film convention (PR #5 review).
-    assert OpenClipWriter.INPUT_TYPES()["required"]["start_frame"][1]["default"] == 1
+def test_writer_start_frame_defaults_to_auto_then_flames_1(tmp_path):
+    # -1 = from clip_info, else 1: Flame numbers its own renders from 1 (PR #5 review).
+    assert OpenClipWriter.INPUT_TYPES()["required"]["start_frame"][1]["default"] == -1
+    clip = _write(tmp_path, start_frame=-1)
+    assert openclip_xml.parse(clip).versions["v001"].spans[0].start_frame == 1
 
 
 def test_include_version_in_filename_defaults_on_for_flames_layout():

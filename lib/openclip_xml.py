@@ -9,6 +9,8 @@ from typing import Optional
 
 from lxml import etree
 
+from . import timecode
+
 MAX_VERSIONS = 1000
 MAX_SPANS = 100
 
@@ -51,6 +53,10 @@ class ClipVersion:
     name: str
     spans: list[ClipSpan] = field(default_factory=list)
     publish_path: Optional[str] = None  # relative to .clip file; written into version userData
+    # "HH:MM:SS:FF" from <feed><startTimecode> ("" when the feed has none); written back on
+    # generate/append, "" writing 00:00:00:00.
+    start_timecode: str = ""
+    colour_space: str = ""  # <feed><storageFormat><colourSpace>, "" when absent (parse only)
 
 
 @dataclass
@@ -84,10 +90,11 @@ def parse(clip_path: str) -> ParsedClip:
     schema_version = root.get("version", "8")
 
     # Most of Autodesk's own example clips have no root <name>; fall back to the file stem.
+    # Never stripped: Flame keeps leading/trailing spaces in clip names (issue #7).
     name_el = root.find("name")
-    clip_name = (name_el.text or "").strip() if name_el is not None else ""
+    clip_name = (name_el.text or "") if name_el is not None else ""
 
-    return _parse_clip(root, clip_name or path.stem, schema_version, clip_path)
+    return _parse_clip(root, clip_name if clip_name.strip() else path.stem, schema_version, clip_path)
 
 
 def resolve_version(clip: ParsedClip, version: str) -> ClipVersion:
@@ -336,11 +343,13 @@ def _build_feed(uid: str, version: ClipVersion, fmt: ClipFormat) -> etree._Eleme
     etree.SubElement(feed, "sampleRate").text = fmt.fps
 
     fps_num, fps_den = fps_to_rational(fmt.fps)
-    fps_int = round(fps_num / fps_den)
+    fps_int = timecode.tc_rate(fps_num / fps_den)
+    ticks, drop = timecode.parse_tc(version.start_timecode or timecode.ZERO, fps_int)
     tc = etree.SubElement(feed, "startTimecode", type="time")
     etree.SubElement(tc, "rate").text = str(fps_int)
-    etree.SubElement(tc, "nbTicks").text = "0"
-    etree.SubElement(tc, "dropMode").text = "NDF"
+    etree.SubElement(tc, "nbTicks").text = str(ticks)
+    # "DF" is assumed to be Flame's drop-frame spelling (only "NDF" seen in real clips).
+    etree.SubElement(tc, "dropMode").text = "DF" if drop else "NDF"
 
     if version.spans:
         etree.SubElement(feed, "startFrame").text = str(version.spans[0].start_frame)
@@ -406,7 +415,11 @@ def _parse_clip(root: etree._Element, clip_name: str, schema_version: str, clip_
         if not uid:
             raise ValueError(f"Feed at index {i} is missing 'vuid' attribute")
         spans = _parse_spans(feed, uid)
-        versions[uid] = ClipVersion(uid=uid, name=uid, spans=spans)
+        versions[uid] = ClipVersion(
+            uid=uid, name=uid, spans=spans,
+            start_timecode=_parse_start_timecode(feed),
+            colour_space=(feed.findtext("storageFormat/colourSpace") or "").strip(),
+        )
 
     current_version = (
         feeds_el.get("currentVersion")
@@ -430,6 +443,23 @@ def _parse_clip(root: etree._Element, clip_name: str, schema_version: str, clip_
         current_version=current_version,
         versions=versions,
     )
+
+
+def _parse_start_timecode(feed: etree._Element) -> str:
+    """<startTimecode><rate/><nbTicks/><dropMode/> -> 'HH:MM:SS:FF', or '' when absent."""
+    tc = feed.find("startTimecode")
+    if tc is None:
+        return ""
+    try:
+        rate = int((tc.findtext("rate") or "").strip())
+        ticks = int((tc.findtext("nbTicks") or "0").strip())
+    except ValueError:
+        return ""
+    drop = (tc.findtext("dropMode") or "NDF").strip().upper() == "DF"
+    try:
+        return timecode.format_tc(ticks, rate, drop and rate in (30, 60))
+    except ValueError:
+        return ""
 
 
 def _parse_spans(feed: etree._Element, version_uid: str) -> list[ClipSpan]:
