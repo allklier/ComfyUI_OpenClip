@@ -16,7 +16,8 @@ Knowing *which* files to stat is the awkward part when `clip_path` is linked. It
 - `version` accepts `"current"` (default) or an explicit typed version name (e.g. `v002`); an invalid name raises `ValueError` listing the valid ones (`openclip_xml.resolve_version`).
 - The `clip_report` text (2.0; replaced the two 1.x displays `available_versions`/`available_aovs`) is pushed into one read-only multiline widget (monospace) on the node itself at execute time via `web/openclip_reader.js`, which listens for the node's `onExecuted` callback and writes the text into a `ComfyWidgets["STRING"]` widget (`serialize: false`, so it's never sent back to Python as an input). This is a different, more standard mechanism than the `widget.draw`/`mouse` override + custom button approach that broke `OpenClipVersionSelector` under a ComfyUI frontend rewrite (see git history), but it is still custom JS and carries some of the same forward-compat risk. The `clip_report` **output** is the guaranteed fallback if the JS ever stops populating the widget — wire it into any text-preview node.
 - **Colour lookup (2.0, issue #7):** the loaded version's `<feed><storageFormat><colourSpace>` → EXR `autodeskColorSpace` (Flame writes its tag there) → `openclip:ColorSpace` → `oiio:ColorSpace` (`image_io.colour_space_from_metadata` does the EXR half). 1.x read only the two OIIO keys, so every Flame clip came back as `''`.
-- **Start timecode** is the feed's `<startTimecode>` (`rate`/`nbTicks`/`dropMode`), shown as `HH:MM:SS:FF` (`;FF` drop-frame), `""` when the feed has none. It is the clip's start, also when `start_frame`/`frame_cap` read a sub-range: a timecode is never derived from a frame number or vice versa (explicit user decision).
+- **Start timecode** is the feed's `<startTimecode>` (`rate`/`nbTicks`/`dropMode`), shown as `HH:MM:SS:FF` (`;FF` drop-frame). When the feed has none, the `smpte:TimeCode` in the header of the **feed's own first frame** (`feed_start_timecode()`, 2026-10-29; Autodesk's example clips carry it only there; header only, rates up to 30, the BCD decode is `timecode.from_smpte_bcd`); `""` when neither exists. It is the clip's start, also when `start_frame`/`frame_cap` read a sub-range — that is why the feed's first frame is opened rather than the first frame read (no offset arithmetic, which drop-frame would complicate): a timecode is never derived from a frame number or vice versa (explicit user decision). The Writer's append check uses the same function for the existing clip.
+- **Versions of different sizes are refused (2026-10-29, explicit user decision: stricter than Flame).** `execute()` compares the `<storageFormat>` width/height of every feed in the picture track (`openclip_xml.feed_sizes`, XML only); any difference raises `VERSIONS OF DIFFERENT SIZES` with each version's size, whichever version was asked for. Feeds with no recorded size are skipped. Reason: switching versions would change the image size inside a ComfyUI workflow. Not in `IS_CHANGED` (it must never raise; `execute()` gives the error). The Writer still appends to such a clip at the current version's size (its format check is unchanged).
 - `clip_name` is the XML `<name>` **verbatim** (Flame keeps leading/trailing spaces; issue #7); the file stem only when `<name>` is missing or blank.
 
 **Inputs**
@@ -64,7 +65,7 @@ AOVS
 ```
 `FORMAT`'s file part comes from the first frame's header (`image_io.describe_frame`). The EXR Sequence Reader has no `VERSIONS` section and no schema; `CLIP` shows its sequence pattern.
 
-**`CLIP_INFO`** (`nodes/_clip_info.py`; a plain dict, all keys always present): `clip_path` (source `.clip`; the sequence folder for the EXR Sequence Reader), `clip_name`, `version_name` (the version actually read), `start_frame` (first frame actually read), `start_timecode`, `fps`, `colour_space`, `format_version`, `frame_padding` (digits of the media's frame token), `metadata` (first frame's EXR header attributes — what `CLIP_METADATA` carried in 1.x). Report-only extras: `media_pattern`, `file_format`, `width`, `height`, `frame_count`, `versions`, `current_version`, `aovs`.
+**`CLIP_INFO`** (`nodes/_clip_info.py`; a plain dict, all keys always present): `clip_path` (source `.clip`; the sequence folder for the EXR Sequence Reader), `clip_name`, `version_name` (the version actually read), `start_frame` (first frame actually read), `start_timecode`, `fps`, `colour_space`, `format_version`, `frame_padding` (digits of the media's frame token), `bit_depth` (`half`/`float` from the first frame's EXR header, `""` otherwise, e.g. PNG; 2026-10-29 — the `clip_report` FORMAT line already shows it, so it isn't repeated), `metadata` (first frame's EXR header attributes — what `CLIP_METADATA` carried in 1.x). Report-only extras: `media_pattern`, `file_format`, `width`, `height`, `frame_count`, `versions`, `current_version`, `aovs`.
 
 **AOVs are a separate, generic mechanism as of 2026-09-23** — see `OpenClipAOVReader`/`OpenClipAOVWriter` below. This replaced a fixed three-AOV interface (`NORMAL`/`NORMAL_WORLD`/`DEPTH`/`NORMAL_RAW` outputs, `depth_layer_name`/`normal_world_layer_name`/`normal_raw_layer_name` widgets) that had two problems: every Reader instance carried those three widgets whether or not the clip had any AOVs at all, and adding a new AOV meant changing the Reader's own interface. Breaking change, made deliberately (explicit user decision, 2026-09-23) rather than kept alongside the old interface — AOVs had only been used in development/testing, nothing released or in production, so there was nothing worth preserving compatibility for.
 
@@ -97,12 +98,13 @@ A new `.clip` is written as schema `version="6"` by default (set by `format_vers
 | `colour_space` | `""` | from `clip_info`, else `Rec.709 video` |
 | `format_version` | `""` | from `clip_info` (if 5–9, else 6 with a warning), else `6` |
 | `frame_padding` | `0` | from `clip_info`, else `4` |
+| `exr_bit_depth` | `auto` | from `clip_info` (`half`/`float`), else `half (16-bit)` (2026-10-29; `auto` is the first combo option, so it is the default; adding an option to a combo doesn't move other widgets' saved values) |
 | `version_name` | `"next"` | **never** from `clip_info` |
 
 Header metadata comes only from `clip_info["metadata"]` (Writer format options still win; a carried `smpte:TimeCode` is replaced by the per-frame one).
 
 **Start timecode (2.0, issue #7).** Written to each new feed's `<startTimecode>` (`rate` = rounded fps, so 24 for 23.976 as Flame writes it; `nbTicks`; `dropMode` `NDF`/`DF`) and, per frame, as the EXR `smpte:TimeCode` counting up from it (`lib/timecode.py`; not written for rates above 30, whose frame numbers don't fit the BCD field). Rules when the destination `.clip` exists (also with `overwrite` on), all checked before anything is written:
-- start timecode differs from the existing clip's current feed (a feed with none counts as `00:00:00:00`) → error;
+- start timecode differs from the existing clip's current feed (taken as the Reader reports it: XML, else its first frame's EXR `smpte:TimeCode`, else `00:00:00:00`; 2026-10-29, so a Reader → Writer append to an EXR-only-timecode clip lines up) → error;
 - same real timecode, different start frame → printed warning only (the timecode lines the versions up);
 - both `00:00:00:00` and different start frames → error.
 
@@ -132,7 +134,7 @@ Header metadata comes only from `clip_info["metadata"]` (Writer format options s
 | `frame_padding` | `INT` | Zero-padding width. Auto `0` = `clip_info`'s, else `4` (→ `%04d`) |
 | `fps` | `FLOAT` | Frame rate. Auto `0` = `clip_info`'s, else `24` (`step 0.001`). Matched to the nearest supported rate (`23.976`, `24`, `25`, `29.97`, `30`, `48`, `50`, `59.94`, `60` — see `lib.openclip_xml.FPS_OPTIONS`) within a small tolerance via `fps_label_from_float()`, then written as that label into `<editRate>` and `<sampleRate>`. Raises `ValueError` (including for NaN/inf) if the value doesn't match any supported rate. Checked, together with the existing-clip format check (width/height/fps/file_format), *before* any directory or frame is written, so a refused run leaves nothing on disk. The NTSC rates are exact rationals (e.g. `23.976` = `24000/1001`), so matching compares against the true rational value, not the rounded decimal label. |
 | `file_format` | `COMBO` | `EXR` or `PNG` |
-| `exr_bit_depth` | `COMBO` | `half (16-bit)` or `float (32-bit)` — EXR only |
+| `exr_bit_depth` | `COMBO` | `auto` (default: `clip_info`'s, else half), `half (16-bit)` or `float (32-bit)` — EXR only |
 | `exr_compression` | `COMBO` | `ZIP`, `PIZ`, `DWAB` — EXR only |
 | `layout` | `COMBO` | `Standard Flame` or `Flat` — see `lib/CLAUDE.md` |
 | `publish` | `BOOLEAN` | Write ComfyUI workspace JSON as `<clip_name>.<version_name>.comfy.json` in the version's media folder and reference it inside the version's `<userData>` in the XML |
@@ -173,7 +175,7 @@ Extracts one named EXR part from an `OpenClipReader`'s `aov_handle`. Generic and
 
 ### `OpenClipExrSequenceReader` — `exr_sequence_reader.py`
 
-Reads a plain EXR frame sequence with no `.clip` wrapper (Blender, Nuke). 2.0: the same 9 outputs as `OpenClipReader` (`IMAGE`, `MASK` at slots 0/1 for `HM_ImageSwitch`/`HM_MaskSwitch`, `clip_info`, `aov_handle`, `frame_count`, `width`, `height`, `fps`, `clip_report`). Its `clip_info` has `version_name`, `format_version` and `start_timecode` empty (a sequence has none; the Writer then uses its defaults), `clip_path` = the sequence folder, `clip_name` = the filename stem, `frame_padding` from the frame token. Its `clip_report` has no VERSIONS section.
+Reads a plain EXR frame sequence with no `.clip` wrapper (Blender, Nuke). 2.0: the same 9 outputs as `OpenClipReader` (`IMAGE`, `MASK` at slots 0/1 for `HM_ImageSwitch`/`HM_MaskSwitch`, `clip_info`, `aov_handle`, `frame_count`, `width`, `height`, `fps`, `clip_report`). Its `clip_info` has `version_name` and `format_version` empty (a sequence has none; the Writer then uses its defaults), `start_timecode` = the **first frame read**'s EXR `smpte:TimeCode` (`""` when absent; 2026-10-29: a plain sequence has no clip start of its own, and the Writer numbers the new clip from the first frame read, so that frame's timecode belongs to it — unlike `OpenClipReader`, which reports its feed's start), `clip_path` = the sequence folder, `clip_name` = the filename stem, `frame_padding` from the frame token. Its `clip_report` has no VERSIONS section.
 
 **Implementation notes:**
 - `sequence_path` takes `name.####.exr` (any number of `#`) or `name.%04d.exr`; relative paths resolve against the input directory, like `clip_path`. `start_frame`/`end_frame` of `-1` mean the first/last frame found on disk; `frame_cap` works as on `OpenClipReader`.
@@ -202,6 +204,7 @@ Unpacks a reader's `clip_info` into one output per value, for wiring single valu
 | `colour_space`, `format_version` | `STRING` | |
 | `frame_padding` | `INT` | not in the agreed socket list, added under "every value as its own socket" |
 | `metadata` | `CLIP_METADATA` | EXR header attributes of the first frame |
+| `bit_depth` | `STRING` | `half`/`float`, `""` for non-EXR (2026-10-29) |
 | `clip_report` | `STRING` | same text as the reader's |
 
 ---

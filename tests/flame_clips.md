@@ -40,18 +40,22 @@ shows its case (catches a mislabelled export).
 - `testclips/clip_1/alpha_test.clip` (gitignored; the issue-#7 repro clip, Flame 2027.2), its
   media path rewritten to `testclips/clip_1/testclip_1.*`.
 - `tests/fixtures/autodesk_examples/` (Autodesk's `/opt/Autodesk/openclip_examples`). These are
-  hand-made examples, not exports: no `<startTimecode>`, but EXRs at 01:00:00:00, which pins the
-  known gap in `test_real_clip_exr_timecode_when_the_xml_has_none`.
+  hand-made examples, not exports: no `<startTimecode>`, but EXRs at 01:00:00:00, read by the
+  Reader since 2026-10-29 (`test_real_clip_exr_timecode_when_the_xml_has_none`).
 - `$OPENCLIP_FLAME_CLIPS`: extra `.clip` files or folders, separated by `:`.
 
 ## What is checked per clip
 
 Reader → Writer with `clip_info` wired and every field on auto, into a new clip and appended
 to (a copy of) the source, then appended again. `tests/flame_compare.py` compares, against the
-source XML and EXRs: start timecode (`rate`, `nbTicks`, `dropMode`), `colourSpace`,
+source XML and EXRs: start timecode (`rate`, `nbTicks`, `dropMode`; the source's first-frame EXR
+timecode when its XML has none), `colourSpace`, bit depth (`channelsDepth`),
 `editRate`/`sampleRate` as exact fractions, `<name>` and the `.clip` file name verbatim,
 schema version, width/height, path padding and frame range, Flame's `<name>_<version>.` media
 naming and version numbering; on append, every original element unchanged except the two
 `currentVersion` attributes. Per written frame: `smpte:TimeCode` = start + offset and equal to
 the source frame's, `openclip:ColorSpace`/`autodeskColorSpace` = the tag, pixels equal to the
-source frame. Bit depth is set to the source's (it isn't carried by `clip_info`).
+source frame. The Writer's bit depth is on auto, so it comes through `clip_info`.
+A clip whose versions differ in size is expected to be refused by the Reader with the
+"VERSIONS OF DIFFERENT SIZES" error (`test_real_clip_with_versions_of_different_sizes_is_refused`;
+the round-trip tests check that error instead).

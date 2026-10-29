@@ -10,7 +10,7 @@ Frames rendered in ComfyUI are written as versioned OpenClip packages that Flame
 
 The easiest way to use these nodes is to add an OpenClip Reader node at the beginning of the workflow. Point it at an existing .clip file rendered from Flame, leave version as 'current', and use the IMAGE output. (For a plain `name.####.exr` sequence with no `.clip`, such as a Blender render, use the OpenClip EXR Sequence Reader instead.)
 
-Then at the end of the workflow add a OpenClip Writer node, connecting the finished image into the IMAGE input and the Reader's `clip_info` output into the Writer's `clip_info` input. That one connection carries the clip's path, name, start frame, start timecode, frame rate, colour space, schema version, frame padding and EXR header metadata. Leave the Writer's fields on their defaults ("auto") and the version on 'next': the result is added as a new version of the source clip, at the same timecode. To write a separate clip instead, add a suffix to the clip_filename pattern, e.g. `$(path)/$(clip_name)_updated.clip`.
+Then at the end of the workflow add a OpenClip Writer node, connecting the finished image into the IMAGE input and the Reader's `clip_info` output into the Writer's `clip_info` input. That one connection carries the clip's path, name, start frame, start timecode, frame rate, colour space, schema version, frame padding, EXR bit depth and EXR header metadata. Leave the Writer's fields on their defaults ("auto") and the version on 'next': the result is added as a new version of the source clip, at the same timecode. To write a separate clip instead, add a suffix to the clip_filename pattern, e.g. `$(path)/$(clip_name)_updated.clip`.
 
 The rest are options for more advanced workflows.
 
@@ -64,19 +64,19 @@ And these settings. "Auto" means: taken from clip_info when it is connected, els
 - include_version_in_filename: on by default. Adds the version to the frame filenames (`foo_v003.0001.exr`) and puts all versions' frames in one folder — the layout Flame uses for its own Open Clip exports, which lets Flame add its own versions to the clip. Off: one subfolder per version, version not in the filename.
 - fps (auto: 0, else 24): the frame rate to place into the clip metadata (must match a standard rate such as 23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60).
 - start_frame (auto: -1, else 1): the number of the first written frame. 1 is how Flame numbers its own renders; use 1001 for Nuke or film pipelines.
-- start_timecode (auto: empty, else the existing clip's when adding a version, else 00:00:00:00): `HH:MM:SS:FF`, or `HH:MM:SS;FF` for drop-frame. Written into the clip and, per frame, into the EXR files (up to 30 fps). Start timecode and start frame are separate: one is never worked out from the other.
+- start_timecode (auto: empty, else the existing clip's when adding a version (its XML start timecode, else its first frame's EXR timecode), else 00:00:00:00): `HH:MM:SS:FF`, or `HH:MM:SS;FF` for drop-frame. Written into the clip and, per frame, into the EXR files (up to 30 fps). Start timecode and start frame are separate: one is never worked out from the other.
 - frame_padding (auto: 0, else 4): how many digits the frame numbers have.
 - colour_space (auto: empty, else `Rec.709 video`): the colour space written into the .clip and the EXR headers. `Rec.709 video` is the name Flame used before 2026, which Flame 2026 and later still recognise (as an alias of `Rec.1886 Rec.709 - Display`), so the same tag works across Flame versions.
 - format_version (auto: empty, else 6): the OpenClip schema version (5–9) of a new clip.
 - file_format: choose between EXR and PNG (AOVs require EXR).
-- exr_bit_depth, exr_compression: EXR specific.
+- exr_bit_depth (auto: the source's EXR bit depth from clip_info, else half (16-bit)), exr_compression: EXR specific.
 - aov_layout: `Multichannel` writes each AOV as a named part inside the same EXR file; `Separate Files` writes one extra `<name>_AOV_<aov>.####.exr` file per AOV.
 - publish: if selected, a copy of the JSON file of the current ComfyUI workflow will be copied next to the version's frames.
 
 When adding a version to an existing clip, the Writer checks before writing anything, so a refused run leaves nothing on disk:
 
 - the format (size, frame rate, file format) must match; if it doesn't, write a separate clip with a new clip_name;
-- the start timecode must match the clip's current version (a clip without one counts as 00:00:00:00), also with overwrite on, because Flame would otherwise place the versions apart in time;
+- the start timecode must match the clip's current version (a clip without one in its XML uses its first frame's EXR timecode, and counts as 00:00:00:00 when there is none), also with overwrite on, because Flame would otherwise place the versions apart in time;
 - a different start frame is only a warning when the clip has a real timecode, but an error when both are at 00:00:00:00, as nothing else would line the versions up.
 
 When the destination is the very `.clip` file clip_info was read from, the version is added to exactly that file.
@@ -96,22 +96,24 @@ The node has the following outputs:
 
 - IMAGE: the image batch read from the file.
 - MASK: the alpha channel read from the file (fully opaque if the source has no alpha).
-- clip_info: everything about the clip in one connection (path, name, version read, start frame, start timecode, frame rate, colour space, schema version, frame padding, EXR header metadata). Wire it into the Writer, or into an OpenClip Clip Info node to get single values.
+- clip_info: everything about the clip in one connection (path, name, version read, start frame, start timecode, frame rate, colour space, schema version, frame padding, EXR bit depth, EXR header metadata). Wire it into the Writer, or into an OpenClip Clip Info node to get single values.
 - aov_handle: a lightweight handle to the clip's frames for the OpenClip AOV Reader (decodes nothing itself).
 - frame_count: the number of frames read.
 - width/height: the dimensions of the canvas.
 - fps: frame rate indicated in the file.
 - clip_report: the report also shown inside the node: clip, format and colour, start timecode and frame range, then one line per version and per AOV, so names can be copied.
 
-The colour space is taken from the .clip (`colourSpace`), else from the EXR header (`autodeskColorSpace`, then the OIIO keys).
+The colour space is taken from the .clip (`colourSpace`), else from the EXR header (`autodeskColorSpace`, then the OIIO keys). The start timecode is taken from the .clip (`startTimecode`), else from the EXR timecode of the version's first frame (Autodesk's example clips carry it only there); it is the clip's start also when a sub-range is read.
+
+All versions of a clip must have the same size: the Reader refuses a clip whose versions differ in width or height (Flame allows it) and lists each version's size, because switching versions would change the image size inside the workflow. Export the versions of another size as a separate clip.
 
 The Reader also takes an optional frame range and version. Queue the Reader alone to inspect a clip's versions and AOVs.
 
 ### OpenClip EXR Sequence Reader
-Reads plain `name.####.exr` sequences with no `.clip` file, such as Blender renders (including Blender's single-part "OpenEXR MultiLayer" layout) or Nuke output. Has the same outputs as the OpenClip Reader, so the two can be swapped behind a switch node. Its clip_info has no version, schema version or start timecode; wired into a Writer, it writes `<folder>/<name>.clip`.
+Reads plain `name.####.exr` sequences with no `.clip` file, such as Blender renders (including Blender's single-part "OpenEXR MultiLayer" layout) or Nuke output. Has the same outputs as the OpenClip Reader, so the two can be swapped behind a switch node. Its clip_info has no version or schema version; its start timecode is the first frame's EXR timecode, if it has one. Wired into a Writer, it writes `<folder>/<name>.clip`.
 
 ### OpenClip Clip Info
-Takes a clip_info and outputs each value on its own socket (clip_path, clip_name, version_name, start_frame, start_timecode, fps, colour_space, format_version, frame_padding, metadata), plus the clip_report text.
+Takes a clip_info and outputs each value on its own socket (clip_path, clip_name, version_name, start_frame, start_timecode, fps, colour_space, format_version, frame_padding, metadata, bit_depth), plus the clip_report text.
 
 ### OpenClip AOV Reader
 Takes an `aov_handle` from either reader and a `part_name`, and decodes only that one named part (e.g. depth, normals, a puzzle matte). Outputs `image` and `matte`; a single-channel AOV is returned as `matte` only. The AOVS section of the reader's report lists the names. Cryptomatte decoding is not supported. If the named part is not found in any frame, the outputs are `None`.

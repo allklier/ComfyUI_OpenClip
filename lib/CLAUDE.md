@@ -10,7 +10,7 @@ Business logic lives here. The three modules map to the three responsibilities: 
 | `image_io.py` | Read/write EXR and PNG sequences via OIIO |
 | `package_layout.py` | Resolve and build the on-disk package directory tree |
 | `colour_transform.py` | Apply an OCIO Display/View transform to an `IMAGE` tensor |
-| `timecode.py` | SMPTE timecode: `<startTimecode>` ticks ↔ `HH:MM:SS:FF`, OpenEXR `smpte:TimeCode` BCD (2.0) |
+| `timecode.py` | SMPTE timecode: `<startTimecode>` ticks ↔ `HH:MM:SS:FF`, OpenEXR `smpte:TimeCode` BCD encode and (2026-10-29) decode (2.0) |
 
 ---
 
@@ -90,7 +90,11 @@ All media paths inside the XML are relative to the `.clip` file's directory.
 
 **Start timecode (2.0, issue #7).** `_parse_clip` reads each feed's `<startTimecode>` (`rate`, `nbTicks`, `dropMode`) into `ClipVersion.start_timecode` as `HH:MM:SS:FF` (`""` if absent) and its `storageFormat/colourSpace` into `ClipVersion.colour_space`. `_build_feed` writes `start_timecode` back (`rate` = rounded fps, as Flame writes 24 for 23.976; `""` → `00:00:00:00`); it used to write `nbTicks` 0 always, which put appended versions an hour apart from a Flame clip at 01:00:00:00. `nbTicks` is taken as a real frame count also for drop-frame, and drop-frame is written as `dropMode` `DF`: both UNVERIFIED (no drop-frame Flame clip seen; only `NDF` in the corpus). `image_io.write_sequence(start_timecode=(ticks, rate, drop))` writes a per-frame `smpte:TimeCode` (verified with OIIO 3.1.15: `spec.attribute("smpte:TimeCode", oiio.TypeTimeCode, (bcd, 0))` reads back, and the BCD of Flame's own frame 2 of the repro clip is reproduced exactly); none for rates above 30 (the BCD frames field holds 0–39).
 
-**`read_format()` reads the current version's feed (2026-10-29)**, not the first `<storageFormat>` in the track: Flame keeps versions of different sizes in one clip (a real clip on the share: v01–v05 1920×1088, v06–v07 1280×720), and the Writer's mismatch check refused to append at the current version's own size. Whether the check should exist at all for Flame clips (Flame itself mixes sizes) is an open question.
+**Reading the EXR timecode (2026-10-29).** `image_io.frame_timecode(path)` reads one frame's `smpte:TimeCode` header-only (OIIO 3.1.15: `spec.getattribute("smpte:TimeCode")` → `(word, user_data)`, `None` when absent; checked on Autodesk's `Beauty.00086400.exr`: `(16777216, 0)` = 01:00:00:00). `timecode.from_smpte_bcd(word, rate)` decodes it (bit 6 = drop-frame) and validates it at `rate`; refuses rates above 30, matching the writer. Used by the Reader when a feed has no `<startTimecode>`.
+
+**`feed_sizes(clip_path)` (2026-10-29)** lists `(vuid, width, height)` of every feed in the picture track (0 where not recorded), for the Reader's mixed-size refusal.
+
+**`read_format()` reads the current version's feed (2026-10-29)**, not the first `<storageFormat>` in the track: Flame keeps versions of different sizes in one clip (a real clip on the share: v01–v05 1920×1088, v06–v07 1280×720), and the Writer's mismatch check refused to append at the current version's own size. Settled 2026-10-29 (user decision): the Writer's check stays as it is, and the Reader refuses clips whose versions differ in size (see `nodes/CLAUDE.md`).
 
 **Clip names are never stripped (2.0, issue #7):** Flame keeps leading/trailing spaces (`woods walk .clip`). A missing or whitespace-only `<name>` falls back to the file stem.
 
