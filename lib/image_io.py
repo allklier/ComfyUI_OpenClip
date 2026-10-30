@@ -10,6 +10,8 @@ import numpy as np
 import OpenImageIO as oiio
 import torch
 
+from . import timecode as _tc
+
 MAX_FRAMES = 100_000
 
 # Matches a printf-style frame specifier such as %04d or %d.
@@ -34,6 +36,12 @@ _SKIP_METADATA_KEYS: frozenset[str] = frozenset({
     "openexr:roundingMode",
     "openexr:dwaCompressionLevel",
     "openexr:multiView",
+    # A part's identity is set by the writer (AOV part names). Flame's single-part EXRs carry
+    # name="rgb"; copied onto every part it made multi-part writes fail ("Each part should have
+    # a unique name") and renamed Separate Files siblings so they couldn't be found (2.0).
+    "name",
+    "oiio:subimagename",
+    "oiio:subimages",
 })
 
 CHANNELS_BEAUTY: tuple[str, ...] = ("R", "G", "B")
@@ -51,6 +59,55 @@ AOV_LAYOUTS: frozenset[str] = frozenset({"Multichannel", "Separate Files"})
 # key and fall back to "oiio:ColorSpace" for files this project didn't write itself.
 COLOUR_SPACE_KEY = "oiio:ColorSpace"
 COLOUR_SPACE_BACKUP_KEY = "openclip:ColorSpace"
+# Flame writes its colour tag into its EXRs under this key (issue #7).
+AUTODESK_COLOUR_SPACE_KEY = "autodeskColorSpace"
+TIMECODE_KEY = "smpte:TimeCode"
+# OpenEXR's standard framesPerSecond (rational); OIIO 3.1.15 names it FramesPerSecond.
+FPS_KEY = "FramesPerSecond"
+
+
+def colour_space_from_metadata(metadata: dict) -> str:
+    """Colour tag from EXR header metadata: autodeskColorSpace, then openclip:ColorSpace,
+    then oiio:ColorSpace ("" if none). The .clip XML's own tag comes before all of these;
+    that lookup is the Reader's."""
+    for key in (AUTODESK_COLOUR_SPACE_KEY, COLOUR_SPACE_BACKUP_KEY, COLOUR_SPACE_KEY):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def describe_frame(filepath: str) -> str:
+    """Header-only one-liner for reports, e.g. 'EXR half PIZ' or 'PNG 8-bit'."""
+    inp = oiio.ImageInput.open(str(filepath))
+    if not inp:
+        return ""
+    try:
+        spec = inp.spec()
+        fmt = {"openexr": "EXR", "png": "PNG"}.get(inp.format_name(), inp.format_name().upper())
+        depth = {"half": "half", "float": "float", "uint8": "8-bit", "uint16": "16-bit"}.get(str(spec.format), str(spec.format))
+        parts = [fmt, depth]
+        if fmt == "EXR":
+            compression = spec.get_string_attribute("compression", "")
+            if compression:
+                parts.append(compression.upper())
+        return " ".join(parts)
+    finally:
+        inp.close()
+
+def frame_timecode(filepath: str) -> Optional[int]:
+    """Header-only: a frame's smpte:TimeCode time-and-flags word, or None when it has none or
+    can't be opened. Verified with OIIO 3.1.15: spec.getattribute("smpte:TimeCode") gives
+    (word, user_data), or None when the attribute is absent."""
+    inp = oiio.ImageInput.open(str(filepath))
+    if not inp:
+        oiio.geterror()  # clear OIIO's pending error; a missing frame just means no timecode
+        return None
+    try:
+        value = inp.spec().getattribute(TIMECODE_KEY)
+    finally:
+        inp.close()
+    return int(value[0]) if value else None
 
 # EXR part-name attribute, tried in this order (see AOV Channel Handling below).
 _PART_NAME_ATTRS: tuple[str, ...] = ("name", "oiio:subimagename")
@@ -225,8 +282,19 @@ def write_sequence(
     metadata: Optional[dict] = None,
     aov_entries: Optional[list[tuple[str, Optional[torch.Tensor], Optional[torch.Tensor]]]] = None,
     aov_layout: str = "Multichannel",
+    colour_space: Optional[str] = None,
+    start_timecode: Optional[tuple[int, int, bool]] = None,
+    fps_rational: Optional[tuple[int, int]] = None,
 ) -> None:
     """Write a frame sequence to disk, plus optional named AOV parts.
+
+    `colour_space`, when given, is written as oiio:ColorSpace and openclip:ColorSpace (and
+    replaces a carried autodeskColorSpace), overriding the carried metadata's values.
+    `start_timecode` = (ticks, rate, drop): every EXR frame gets its own smpte:TimeCode,
+    counting up one per frame from it; a carried smpte:TimeCode is dropped. Rates above 30
+    get none (see timecode.smpte_bcd).
+    `fps_rational` = (numerator, denominator): written to every EXR frame as framesPerSecond,
+    as Flame does (e.g. 24000/1001 for 23.976); a carried value is dropped.
 
     `aov_entries`: list of (name, image, matte) -- exactly one of image ([N,H,W,C]) or
     matte ([N,H,W]) should be set per entry (the caller node validates this; here, image
@@ -263,19 +331,51 @@ def write_sequence(
     if n_frames > 1 and not _FRAME_TOKEN_RE.search(path_pattern):
         raise ValueError(f"path_pattern has no frame token but {n_frames} frames were given: {path_pattern}")
 
+    if colour_space is not None or start_timecode is not None or fps_rational is not None:
+        metadata = dict(metadata or {})
+        if colour_space is not None:
+            metadata[COLOUR_SPACE_KEY] = colour_space
+            if AUTODESK_COLOUR_SPACE_KEY in metadata:
+                metadata[AUTODESK_COLOUR_SPACE_KEY] = colour_space
+        if start_timecode is not None:
+            # The carried value is the source's first frame; ours is written per frame.
+            metadata.pop(TIMECODE_KEY, None)
+        if fps_rational is not None:
+            for key in [k for k in metadata if k.lower() == FPS_KEY.lower()]:
+                del metadata[key]
+
     for i in range(n_frames):
         frame_num = start_frame + i
         filepath = frame_path(path_pattern, frame_num)
         mask = masks[i] if masks is not None else None
+        typed = _timecode_attrs(start_timecode, i)
+        if fps_rational is not None:
+            typed.append((FPS_KEY, oiio.TypeRational, fps_rational))
         frame_aovs = [(name, _select_frame(image, i), _select_frame(matte, i)) for name, image, matte in aov_entries]
         inline_aovs = frame_aovs if aov_layout == "Multichannel" else None
-        _write_frame(filepath, images[i], mask, file_format, exr_bit_depth, exr_compression, metadata, aov_parts=inline_aovs)
+        _write_frame(filepath, images[i], mask, file_format, exr_bit_depth, exr_compression, metadata,
+                     aov_parts=inline_aovs, typed_attrs=typed)
 
         if aov_entries and aov_layout == "Separate Files":
             for name, image, matte in frame_aovs:
                 aov_filepath = frame_path(_aov_sibling_pattern(path_pattern, name), frame_num)
                 pixels, names = _aov_pixels_and_names(image, matte)
-                _write_exr(aov_filepath, pixels, names, exr_bit_depth, exr_compression, metadata, part_name=name)
+                _write_exr(aov_filepath, pixels, names, exr_bit_depth, exr_compression, metadata,
+                           part_name=name, typed_attrs=typed)
+
+
+def _timecode_attrs(start_timecode: Optional[tuple[int, int, bool]], offset: int) -> list:
+    """[(key, TypeDesc, value)] for frame `offset` of a sequence starting at start_timecode."""
+    if start_timecode is None:
+        return []
+    ticks, rate, drop = start_timecode
+    bcd = _tc.smpte_bcd(ticks + offset, rate, drop)
+    return [] if bcd is None else [(TIMECODE_KEY, oiio.TypeTimeCode, bcd)]
+
+
+def _apply_typed_attrs(spec, typed_attrs: Optional[list]) -> None:
+    for key, typedesc, value in typed_attrs or ():
+        spec.attribute(key, typedesc, value)
 
 
 # --- private helpers ---
@@ -488,6 +588,7 @@ def _write_exr(
     exr_compression: str,
     metadata: Optional[dict],
     part_name: Optional[str] = None,
+    typed_attrs: Optional[list] = None,
 ) -> None:
     height, width, nchannels = pixels.shape
     dtype = _OIIO_BIT_DEPTHS[exr_bit_depth]
@@ -508,6 +609,7 @@ def _write_exr(
                 spec.attribute(COLOUR_SPACE_BACKUP_KEY, oiio.TypeString, str(metadata[COLOUR_SPACE_KEY]))
             except Exception:
                 pass
+    _apply_typed_attrs(spec, typed_attrs)
     # Writer format settings are applied last so they always override carried metadata.
     spec["compression"] = _OIIO_COMPRESSIONS[exr_compression]
     pixels_write = np.ascontiguousarray(pixels, dtype=np.float32)
@@ -533,6 +635,7 @@ def _write_multipart_exr(
     exr_bit_depth: str,
     exr_compression: str,
     metadata: Optional[dict],
+    typed_attrs: Optional[list] = None,
 ) -> None:
     """Writes a true multi-part EXR: `parts` is [(pixels, channelnames, part_name), ...],
     part_name None for the first (beauty) part. Verified against the installed OIIO
@@ -559,6 +662,7 @@ def _write_multipart_exr(
                     spec.attribute(COLOUR_SPACE_BACKUP_KEY, oiio.TypeString, str(metadata[COLOUR_SPACE_KEY]))
                 except Exception:
                     pass
+        _apply_typed_attrs(spec, typed_attrs)
         spec["compression"] = _OIIO_COMPRESSIONS[exr_compression]
         specs.append(spec)
 
@@ -590,6 +694,7 @@ def _write_frame(
     exr_compression: str,
     metadata: Optional[dict] = None,
     aov_parts: Optional[list[tuple[str, Optional[torch.Tensor], Optional[torch.Tensor]]]] = None,
+    typed_attrs: Optional[list] = None,
 ) -> None:
     beauty_channels = [image.numpy()]
     beauty_names = list(CHANNELS_BEAUTY)
@@ -606,7 +711,8 @@ def _write_frame(
         return
 
     if not aov_parts:
-        _write_exr(filepath, beauty_pixels, tuple(beauty_names), exr_bit_depth, exr_compression, metadata)
+        _write_exr(filepath, beauty_pixels, tuple(beauty_names), exr_bit_depth, exr_compression, metadata,
+                   typed_attrs=typed_attrs)
         return
 
     parts: list[tuple[np.ndarray, tuple[str, ...], Optional[str]]] = [
@@ -615,4 +721,4 @@ def _write_frame(
     for name, aov_image, aov_matte in aov_parts:
         pixels, names = _aov_pixels_and_names(aov_image, aov_matte)
         parts.append((pixels, names, name))
-    _write_multipart_exr(filepath, parts, exr_bit_depth, exr_compression, metadata)
+    _write_multipart_exr(filepath, parts, exr_bit_depth, exr_compression, metadata, typed_attrs=typed_attrs)

@@ -90,7 +90,7 @@ def test_four_channel_aov_image_round_trips_and_matte_is_channel_zero(tmp_path):
     rgba = torch.rand(2, 16, 16, 4)
     chain = OpenClipAOVWriter().execute(name="ao_rgba", image=rgba)[0]
     out = _write_with_chain(tmp_path, chain)
-    image, matte = OpenClipAOVReader().execute(out[11], "ao_rgba")
+    image, matte = OpenClipAOVReader().execute(out[3], "ao_rgba")
     assert torch.equal(image, rgba)
     assert torch.equal(matte, rgba[..., 0])  # no "R" channel name for >3 channels -> channel 0
 
@@ -98,7 +98,7 @@ def test_four_channel_aov_image_round_trips_and_matte_is_channel_zero(tmp_path):
 def test_two_channel_aov_image_round_trips(tmp_path):
     rg = torch.rand(2, 16, 16, 2)
     chain = OpenClipAOVWriter().execute(name="motion", image=rg)[0]
-    image, matte = OpenClipAOVReader().execute(_write_with_chain(tmp_path, chain)[11], "motion")
+    image, matte = OpenClipAOVReader().execute(_write_with_chain(tmp_path, chain)[3], "motion")
     assert torch.equal(image, rg) and torch.equal(matte, rg[..., 0])
 
 
@@ -110,19 +110,19 @@ def test_mixed_chain_image_and_matte_entries_do_not_cross_contaminate(tmp_path):
     for name, kw in (("normals", {"image": normals}), ("depth", {"matte": depth}), ("ids", {"matte": ids})):
         chain = OpenClipAOVWriter().execute(name=name, aov_chain=chain, **kw)[0]
     out = _write_with_chain(tmp_path, chain)
-    assert out[15].split("\n") == ["normals", "depth", "ids"]
+    assert out[2]["aovs"] == ["normals", "depth", "ids"]
     reader = OpenClipAOVReader()
-    assert torch.equal(reader.execute(out[11], "normals")[0], normals)
-    img, m = reader.execute(out[11], "depth")
+    assert torch.equal(reader.execute(out[3], "normals")[0], normals)
+    img, m = reader.execute(out[3], "depth")
     assert img is None and torch.equal(m, depth)
-    assert torch.equal(reader.execute(out[11], "ids")[1], ids)
+    assert torch.equal(reader.execute(out[3], "ids")[1], ids)
 
 
 def test_aov_survives_half_precision_within_tolerance_and_does_not_clamp(tmp_path):
     hdr = torch.rand(2, 16, 16, 3) * 400 - 100  # well outside 0..1, negative
     chain = OpenClipAOVWriter().execute(name="pos", image=hdr)[0]
     out = _write_with_chain(tmp_path, chain, exr_bit_depth="half (16-bit)")
-    image, _ = OpenClipAOVReader().execute(out[11], "pos")
+    image, _ = OpenClipAOVReader().execute(out[3], "pos")
     assert torch.allclose(image, hdr, rtol=1e-3, atol=0.1) and image.min() < 0 and image.max() > 100
 
 
@@ -133,8 +133,8 @@ def test_aov_names_with_awkward_characters_in_separate_files_layout(tmp_path):
     siblings = sorted(p.name for p in (tmp_path / "s" / "v001").glob("*.exr"))
     assert any("AOV_Z_depth_main" in n for n in siblings)  # sanitized for the filesystem
     # the sibling file carries the *original* name as its part name, which the probe recovers
-    assert out[15] == "Z depth/main"
-    m_image, m_matte = OpenClipAOVReader().execute(out[11], "Z depth/main")
+    assert out[2]["aovs"] == ["Z depth/main"]
+    m_image, m_matte = OpenClipAOVReader().execute(out[3], "Z depth/main")
     assert m_image is None  # single channel -> matte only
     assert torch.allclose(m_matte, matte, atol=1e-3)
 
@@ -274,8 +274,9 @@ def test_plain_rgba_sequence_with_blank_layer(tmp_path):
     _plain_seq(tmp_path)
     r = _run(tmp_path / "plain.####.exr")
     assert r[0].shape == (4, 16, 16, 3) and torch.all(r[1] == 0.5)
-    assert r[2:8] == (4, 16, 16, 1, str(tmp_path), "plain")
-    assert r[12] == ""  # no AOV parts
+    assert r[4:7] == (4, 16, 16)
+    assert (r[2]["start_frame"], r[2]["clip_path"], r[2]["clip_name"]) == (1, str(tmp_path), "plain")
+    assert r[2]["aovs"] == []  # no AOV parts
 
 
 def test_plain_rgb_sequence_gets_an_opaque_mask(tmp_path):
@@ -290,7 +291,7 @@ def test_plain_rgb_sequence_gets_an_opaque_mask(tmp_path):
 ])
 def test_clip_name_is_the_filename_stem_before_the_frame_token(tmp_path, pattern, stem):
     image_io.write_sequence(str(tmp_path / pattern.replace("####", "%04d")), torch.rand(1, 8, 8, 3), None, 1, "EXR")
-    assert _run(tmp_path / pattern)[7] == stem
+    assert _run(tmp_path / pattern)[2]["clip_name"] == stem
 
 
 def test_discovery_ignores_other_stems_and_extensions_and_sorts_numerically(tmp_path):
@@ -306,19 +307,20 @@ def test_discovery_handles_regex_metacharacters_in_the_stem(tmp_path):
     stem = "my.shot[v1]+(final)"
     image_io.write_sequence(str(tmp_path / f"{stem}.%04d.exr"), torch.rand(3, 4, 4, 3), None, 5, "EXR")
     assert _frames_on_disk(str(tmp_path / f"{stem}.%04d.exr")) == [5, 6, 7]
-    assert _run(tmp_path / f"{stem}.####.exr")[2] == 3
+    assert _run(tmp_path / f"{stem}.####.exr")[4] == 3
 
 
 def test_explicit_start_only_and_end_only_use_disk_discovery_for_the_other_end(tmp_path):
     _plain_seq(tmp_path, n=6, start=10)  # frames 10..15
-    assert _run(tmp_path / "plain.####.exr", start_frame=12)[2:6:3] == (4, 12)  # frame_count, start
+    r = _run(tmp_path / "plain.####.exr", start_frame=12)
+    assert (r[4], r[2]["start_frame"]) == (4, 12)  # frame_count, start
     r = _run(tmp_path / "plain.####.exr", end_frame=12)
-    assert r[2] == 3 and r[5] == 10
+    assert r[4] == 3 and r[2]["start_frame"] == 10
 
 
 def test_explicit_range_does_not_require_a_directory_scan_to_succeed(tmp_path):
     _plain_seq(tmp_path, n=3, start=1)
-    assert _run(tmp_path / "plain.####.exr", start_frame=1, end_frame=2)[2] == 2
+    assert _run(tmp_path / "plain.####.exr", start_frame=1, end_frame=2)[4] == 2
 
 
 def test_start_after_end_raises(tmp_path):
@@ -346,42 +348,42 @@ def test_unknown_layer_raises_naming_the_missing_channels(blender_multilayer_fix
 
 def test_layer_widget_is_stripped(blender_multilayer_fixtures):
     r = _run(blender_multilayer_fixtures / "render.####.exr", layer="  CamelMatte.Combined  ")
-    assert r[2] == 3
+    assert r[4] == 3
 
 
 def test_relative_sequence_path_resolves_against_the_input_directory(tmp_path, monkeypatch):
     _plain_seq(tmp_path)
     monkeypatch.setitem(sys.modules, "folder_paths", types.SimpleNamespace(get_input_directory=lambda: str(tmp_path)))
-    assert _run("plain.####.exr")[2] == 4
+    assert _run("plain.####.exr")[4] == 4
 
 
 def test_printf_style_path_is_accepted(tmp_path):
     _plain_seq(tmp_path)
-    assert _run(tmp_path / "plain.%04d.exr")[2] == 4
+    assert _run(tmp_path / "plain.%04d.exr")[4] == 4
 
 
 def test_header_colour_space_prefers_openclip_backup_key(tmp_path):
     _plain_seq(tmp_path, metadata={"oiio:ColorSpace": "ARRI LogC4 / AWG4"})
-    assert _run(tmp_path / "plain.####.exr")[10] == "ARRI LogC4 / AWG4"
+    assert _run(tmp_path / "plain.####.exr")[2]["colour_space"] == "ARRI LogC4 / AWG4"
 
 
 def test_metadata_output_is_the_clip_metadata_dict(tmp_path):
     _plain_seq(tmp_path, metadata={"Artist": "jan"})
-    meta = _run(tmp_path / "plain.####.exr")[8]
+    meta = _run(tmp_path / "plain.####.exr")[2]["metadata"]
     assert isinstance(meta, dict) and meta["Artist"] == "jan"
 
 
 def test_fps_output_is_the_widget_value_as_float(tmp_path):
     _plain_seq(tmp_path)
     r = _run(tmp_path / "plain.####.exr", fps=23.976)
-    assert isinstance(r[11], float) and r[11] == 23.976
+    assert isinstance(r[7], float) and r[7] == 23.976 and r[2]["fps"] == 23.976
 
 
-def test_ui_payload_carries_available_aovs(blender_multilayer_fixtures):
+def test_ui_payload_carries_the_clip_report(blender_multilayer_fixtures):
     out = ExrSequenceReader().execute(
         sequence_path=str(blender_multilayer_fixtures / "render.####.exr"), layer="CamelMatte.Combined",
         start_frame=-1, end_frame=-1, frame_cap=-1, fps=24.0, colour_space="")
-    assert out["ui"]["available_aovs"] == [out["result"][12]]
+    assert out["ui"] == {"clip_report": [out["result"][8]]}
 
 
 def test_is_changed_detects_a_rerendered_first_frame(tmp_path):
@@ -407,17 +409,17 @@ def test_is_changed_falls_back_to_last_execute_for_a_linked_path(tmp_path):
 
 def test_exr_reader_outputs_wire_into_writer_and_round_trip_via_openclip_reader(blender_multilayer_fixtures, tmp_path):
     r = _run(blender_multilayer_fixtures / "render.####.exr", layer="CamelMatte.Combined", colour_space="ACEScg")
-    images, masks, _n, _w, _h, start, _folder, name, meta, handle, cs, fps, _aovs = r
+    images, masks, info, handle, *_ = r
     normals, _ = OpenClipAOVReader().execute(handle, "ViewLayer.Normal")
     chain = OpenClipAOVWriter().execute(name="normals", image=normals)[0]
+    # Everything else (name, start frame, fps, colour, metadata) comes from clip_info.
     clip = OpenClipWriter().execute(
-        IMAGE=images, MASK=masks, CLIP_METADATA=meta, aov_chain=chain, clip_path=str(tmp_path / "out"), clip_name=name,
-        clip_filename="$(path)/$(clip_name).clip", version_name="next", fps=fps, start_frame=start, frame_padding=4,
-        file_format="EXR", exr_bit_depth="float (32-bit)", exr_compression="ZIP", colour_space=cs)[0]
+        IMAGE=images, MASK=masks, clip_info=info, aov_chain=chain, clip_path=str(tmp_path / "out"),
+        file_format="EXR", exr_bit_depth="float (32-bit)", exr_compression="ZIP")[0]
     back = OpenClipReader().execute(clip_path=clip, version="current", start_frame=-1, end_frame=-1, path_from="", path_to="")["result"]
     assert torch.equal(back[0], images) and torch.equal(back[1], masks)
-    assert back[7] == start and back[9] == name
-    n_back, _ = OpenClipAOVReader().execute(back[11], "normals")
+    assert back[2]["start_frame"] == info["start_frame"] and back[2]["clip_name"] == info["clip_name"]
+    n_back, _ = OpenClipAOVReader().execute(back[3], "normals")
     assert torch.equal(n_back, normals)
     assert openclip_xml.read_format(clip).colour_space == "ACEScg"
 

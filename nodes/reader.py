@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from ..lib import image_io, openclip_xml
+from ..lib import image_io, openclip_xml, timecode
+from ._clip_info import bit_depth_of, build_report, compression_of, padding_of
 from ._paths import resolve_clip_path
 
 # Guard against probing excessively broad path prefixes (e.g. root '/').
@@ -54,6 +55,57 @@ def _resolve_read_plan(clip_path: str, version: str, start_frame: int, end_frame
     return clip_path, parsed, clip_version, abs_pattern, resolved_start, resolved_end
 
 
+def feed_start_timecode(clip_version: openclip_xml.ClipVersion, abs_pattern: str, fps: float,
+                        frame: int | None = None) -> str:
+    """The timecode of `frame` (a frame number of the feed; default the feed's first frame, i.e.
+    the clip's start). From the feed's <startTimecode> plus the frames between its first frame
+    and `frame` (drop-frame counted by timecode.format_tc); when the feed has no
+    <startTimecode>, the smpte:TimeCode in that frame's own header (Autodesk's example clips carry
+    their timecode only there). "" when neither exists (or the frame isn't there, or the rate is
+    above 30: see timecode.from_smpte_bcd). A timecode is never worked out from a frame number
+    alone: the offset is added to a real timecode.
+    Called without `frame` by OpenClipWriter's append check, which needs the clip's start; the
+    Reader passes the first frame it reads, since clip_info's start timecode belongs to its
+    start_frame (a window read from frame 3 starts 2 frames after the clip, 2026-10-30)."""
+    first = clip_version.spans[0].start_frame if clip_version.spans else None
+    if frame is None:
+        frame = first
+    if clip_version.start_timecode:
+        if first is None or frame is None or frame <= first:
+            return clip_version.start_timecode
+        rate = timecode.tc_rate(fps)
+        try:
+            ticks, drop = timecode.parse_tc(clip_version.start_timecode, rate)
+        except ValueError:
+            return clip_version.start_timecode
+        return timecode.format_tc(ticks + (frame - first), rate, drop)
+    if frame is None:
+        return ""
+    word = image_io.frame_timecode(image_io.frame_path(abs_pattern, frame))
+    if word is None:
+        return ""
+    try:
+        return timecode.from_smpte_bcd(word, timecode.tc_rate(fps))
+    except ValueError:
+        return ""
+
+
+def _check_uniform_size(clip_path: str) -> None:
+    """Refuse a clip whose versions have different sizes (XML only; feeds that record no size
+    are skipped). Stricter than Flame on purpose: switching versions would change the image size
+    inside the workflow (user decision, 2026-10-29)."""
+    sized = [(v, w, h) for v, w, h in openclip_xml.feed_sizes(clip_path) if w > 0 and h > 0]
+    if len({(w, h) for _, w, h in sized}) > 1:
+        listing = "\n".join(f"  {v}  {w}x{h}" for v, w, h in sized)
+        raise ValueError(
+            f"[OpenClipReader] VERSIONS OF DIFFERENT SIZES — refusing to read '{clip_path}'.\n"
+            f"{listing}\n"
+            f"Every version of a clip used in ComfyUI must have the same size, so that switching "
+            f"versions can't change the image size inside the workflow. Export the versions of "
+            f"another size as a separate clip."
+        )
+
+
 # unique_id -> the files the last successful execute() actually read, so IS_CHANGED can
 # still fingerprint them when clip_path arrives as a link. See IS_CHANGED for why this
 # indirection is necessary at all. Process-local and lost on restart, which costs one
@@ -98,8 +150,10 @@ class OpenClipReader:
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK", "INT", "INT", "INT", "STRING", "STRING", "INT", "STRING", "STRING", "CLIP_METADATA", "AOV_HANDLE", "STRING", "FLOAT", "STRING", "STRING")
-    RETURN_NAMES = ("IMAGE", "MASK", "frame_count", "width", "height", "format_version", "version_name", "start_frame", "clip_path", "clip_name", "metadata", "aov_handle", "colour_space", "fps", "available_versions", "available_aovs")
+    # 2.0: everything about the clip travels in clip_info (see nodes/_clip_info.py); unpack it
+    # with OpenClipClipInfo. IMAGE/MASK stay at slots 0/1.
+    RETURN_TYPES = ("IMAGE", "MASK", "CLIP_INFO", "AOV_HANDLE", "INT", "INT", "INT", "FLOAT", "STRING")
+    RETURN_NAMES = ("IMAGE", "MASK", "clip_info", "aov_handle", "frame_count", "width", "height", "fps", "clip_report")
     OUTPUT_NODE = True
     FUNCTION = "execute"
     CATEGORY = "OpenClip"
@@ -118,6 +172,7 @@ class OpenClipReader:
         clip_path, parsed, clip_version, abs_pattern, resolved_start, resolved_end = _resolve_read_plan(
             clip_path, version, start_frame, end_frame, path_from, path_to
         )
+        _check_uniform_size(clip_path)
         if frame_cap > -1:
             resolved_end = min(resolved_end, resolved_start + frame_cap - 1)
         # Remember what this node instance actually read, so IS_CHANGED can stat these
@@ -128,25 +183,42 @@ class OpenClipReader:
         fps = fps_num / fps_den
 
         images, masks, metadata = image_io.read_sequence(abs_pattern, resolved_start, resolved_end, load_alpha=True)
-        # Prefer the verbatim backup key over "oiio:ColorSpace" itself — OIIO's EXR plugin
-        # silently renames/drops that key for names outside its built-in registry (e.g.
-        # camera log profiles); see image_io.COLOUR_SPACE_BACKUP_KEY.
-        colour_space = metadata.get(image_io.COLOUR_SPACE_BACKUP_KEY) or metadata.get(image_io.COLOUR_SPACE_KEY, "")
+        # The .clip's own tag first: Flame writes it there (and as autodeskColorSpace in its
+        # EXRs), not under the OIIO keys (issue #7). See image_io.colour_space_from_metadata.
+        colour_space = clip_version.colour_space or image_io.colour_space_from_metadata(metadata)
 
         frame_count, height, width = images.shape[0], images.shape[1], images.shape[2]
-        available_versions = _format_available_versions(parsed.versions.keys(), parsed.current_version)
         aov_handle = {"abs_pattern": abs_pattern, "start_frame": resolved_start, "end_frame": resolved_end, "clip_path": clip_path}
-        # Header-only (no pixel decode) -- see image_io.probe_aov_names. One representative
-        # frame, same frame IS_CHANGED already fingerprints, assumes AOV presence doesn't
-        # vary frame to frame (matching read_named_part's own whole-sequence semantics).
-        available_aovs = "\n".join(image_io.probe_aov_names(abs_pattern, resolved_start))
+        first_frame = image_io.frame_path(abs_pattern, resolved_start)
+        file_format = image_io.describe_frame(first_frame)
+        clip_info = {
+            "clip_path": clip_path,
+            "clip_name": parsed.clip_name,
+            "version_name": clip_version.name,
+            "start_frame": resolved_start,
+            "start_timecode": feed_start_timecode(clip_version, abs_pattern, fps, resolved_start),
+            "fps": fps,
+            "colour_space": colour_space,
+            "format_version": parsed.schema_version,
+            "frame_padding": padding_of(abs_pattern),
+            "bit_depth": bit_depth_of(file_format),
+            "compression": compression_of(file_format),
+            "metadata": metadata,
+            "media_pattern": abs_pattern,
+            "file_format": file_format,
+            "width": width,
+            "height": height,
+            "frame_count": frame_count,
+            "versions": list(parsed.versions),  # the file's order (Flame's creation order)
+            "current_version": parsed.current_version,
+            # Header-only (no pixel decode) -- see image_io.probe_aov_names. One
+            # representative frame, assumes AOV presence doesn't vary frame to frame.
+            "aovs": image_io.probe_aov_names(abs_pattern, resolved_start),
+        }
+        clip_report = build_report(clip_info)
         return {
-            "ui": {"available_versions": [available_versions], "available_aovs": [available_aovs]},
-            "result": (
-                images, masks, frame_count, width, height, parsed.schema_version,
-                clip_version.name, resolved_start, clip_path, parsed.clip_name, metadata,
-                aov_handle, colour_space, fps, available_versions, available_aovs,
-            ),
+            "ui": {"clip_report": [clip_report]},
+            "result": (images, masks, clip_info, aov_handle, frame_count, width, height, fps, clip_report),
         }
 
     # Returned when the mtime/size fingerprint cannot be computed. Must be a stable
@@ -215,13 +287,6 @@ class OpenClipReader:
 
         # Nothing to go on yet (first queue, or first after a restart).
         return cls._UNFINGERPRINTABLE
-
-
-def _format_available_versions(version_names, current_version: str) -> str:
-    return "\n".join(
-        f"{name}  (current)" if name == current_version else name
-        for name in sorted(version_names)
-    )
 
 
 def _remap_prefix(path: str, path_from: str, path_to: str) -> str:

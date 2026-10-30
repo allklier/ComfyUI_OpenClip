@@ -203,5 +203,36 @@ def blender_multilayer_fixtures(tmp_path_factory) -> Path:
     return out
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--tier", choices=("smoke", "full"), default="smoke",
+        help="smoke (default; what CI runs): unit tests + synthetic Flame-like cases. "
+             "full: also the real-Flame-clip tests (marker flame_clips; tests/flame_clips.md).",
+    )
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "slow: heavier large-image/long-sequence tests; deselect with -m 'not slow'")
+    config.addinivalue_line(
+        "markers",
+        "flame_clips: needs real Flame/Autodesk clips (gitignored, not redistributable); runs only with "
+        "--tier full, and skips there when the clips are absent",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--tier") == "full":
+        return
+    skip = pytest.mark.skip(reason="real Flame clips: full tier only (pytest --tier full)")
+    for item in items:
+        if "flame_clips" in item.keywords:
+            item.add_marker(skip)
+
+
+def named_result(node_cls, result) -> dict:
+    """A node's result tuple as {output name: value}, so tests don't depend on slot order.
+    Also flattens clip_info's keys in as 'info.<key>' for brevity."""
+    out = dict(zip(node_cls.RETURN_NAMES, result))
+    for k, v in (out.get("clip_info") or {}).items():
+        out[f"info.{k}"] = v
+    return out

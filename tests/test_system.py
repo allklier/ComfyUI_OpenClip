@@ -16,6 +16,8 @@ from ComfyUI_OpenClip.nodes.aov_writer import OpenClipAOVWriter
 from ComfyUI_OpenClip.nodes.reader import OpenClipReader
 from ComfyUI_OpenClip.nodes.writer import OpenClipWriter
 
+from .conftest import named_result
+
 
 # --- helpers ---
 
@@ -58,11 +60,12 @@ def _clip_with_seq(tmp_path: Path, clip_name: str, version: str, n_frames: int =
 def test_read_v8_clip_end_to_end(tmp_path):
     clip_path, original = _clip_with_seq(tmp_path, "sh010", "v001")
     reader = OpenClipReader()
-    images, masks, frame_count, width, height, format_version, *_, fps, _available_versions, _available_aovs = reader.execute(
+    images, masks, info, _handle, frame_count, width, height, fps, _report = reader.execute(
         clip_path=clip_path, version="current",
         start_frame=-1, end_frame=-1,
         path_from="", path_to="",
     )["result"]
+    format_version = info["format_version"]
     assert images.shape == (4, 64, 64, 3)
     assert frame_count == 4
     assert width == 64
@@ -85,7 +88,7 @@ def test_read_explicit_version(tmp_path):
 def test_frame_cap_limits_the_read(tmp_path):
     clip_path, _ = _clip_with_seq(tmp_path, "sh010", "v001", n_frames=10)
     reader = OpenClipReader()
-    images, masks, frame_count, *_ = reader.execute(
+    images, masks, _info, _handle, frame_count, *_ = reader.execute(
         clip_path=clip_path, version="current",
         start_frame=-1, end_frame=-1,
         path_from="", path_to="",
@@ -128,8 +131,7 @@ def test_frame_cap_is_relative_to_native_start_regardless_of_numbering(tmp_path)
     clip_b, _ = _clip_with_seq(tmp_path, "bg", "v001", n_frames=10, start_frame=1001)
     reader = OpenClipReader()
 
-    # RETURN_NAMES: IMAGE=0, MASK=1, frame_count=2, width=3, height=4,
-    # format_version=5, version_name=6, start_frame=7, ...
+    # RETURN_NAMES: IMAGE=0, MASK=1, clip_info=2, aov_handle=3, frame_count=4, ...
     result_a = reader.execute(
         clip_path=clip_a, version="current",
         start_frame=-1, end_frame=-1,
@@ -143,8 +145,8 @@ def test_frame_cap_is_relative_to_native_start_regardless_of_numbering(tmp_path)
         frame_cap=5,
     )["result"]
 
-    assert result_a[0].shape[0] == 5 and result_a[2] == 5 and result_a[7] == 1
-    assert result_b[0].shape[0] == 5 and result_b[2] == 5 and result_b[7] == 1001
+    assert result_a[0].shape[0] == 5 and result_a[4] == 5 and result_a[2]["start_frame"] == 1
+    assert result_b[0].shape[0] == 5 and result_b[4] == 5 and result_b[2]["start_frame"] == 1001
 
 
 def test_read_missing_version_raises(tmp_path):
@@ -303,7 +305,7 @@ def test_read_auto_remap(tmp_path):
     clip_file.write_bytes(xml_bytes)
 
     reader = OpenClipReader()
-    images, _, frame_count, *_ = reader.execute(
+    images, _, _info, _handle, frame_count, *_ = reader.execute(
         clip_path=str(clip_file), version="current",
         start_frame=-1, end_frame=-1,
         path_from="", path_to="",
@@ -429,7 +431,7 @@ def test_round_trip_rgb(tmp_path):
         layout="Standard Flame", publish=False,
     )
     reader = OpenClipReader()
-    images, _, frame_count, *_ = reader.execute(
+    images, _, _info, _handle, frame_count, *_ = reader.execute(
         clip_path=clip_path, version="current",
         start_frame=-1, end_frame=-1,
         path_from="", path_to="",
@@ -475,7 +477,7 @@ def test_round_trip_preserves_fps(tmp_path):
         layout="Standard Flame", publish=False,
     )
     reader = OpenClipReader()
-    *_, fps, _available_versions, _available_aovs = reader.execute(
+    *_, fps, _report = reader.execute(
         clip_path=clip_path, version="current",
         start_frame=-1, end_frame=-1,
         path_from="", path_to="",
@@ -665,10 +667,11 @@ def test_reader_resolves_current_to_actual_version_name(tmp_path):
         start_frame=-1, end_frame=-1,
         path_from="", path_to="",
     )["result"]
-    version_name = result[6]
-    available_versions = result[-2]
+    version_name = result[2]["version_name"]
     assert version_name == "v003"  # never the literal "current"
-    assert available_versions == "v001\nv002\nv003  (current)"
+    assert result[2]["versions"] == ["v001", "v002", "v003"]
+    assert result[2]["current_version"] == "v003"
+    assert "VERSIONS\n  v001\n  v002\n  v003  (current)  ← loaded" in result[-1]
 
 
 def test_reader_resolves_explicit_version_name(tmp_path):
@@ -679,7 +682,7 @@ def test_reader_resolves_explicit_version_name(tmp_path):
         start_frame=-1, end_frame=-1,
         path_from="", path_to="",
     )["result"]
-    assert result[6] == "v002"
+    assert result[2]["version_name"] == "v002"
 
 
 # --- AOV round-trip (Reader/Writer nodes) ---
@@ -698,15 +701,14 @@ def _writer_kwargs(tmp_path: Path, clip_name: str, **overrides) -> dict:
 
 
 def _reader_result(clip_path: str) -> dict:
-    names = (
-        "IMAGE", "MASK", "frame_count", "width", "height", "format_version", "version_name",
-        "start_frame", "clip_path", "clip_name", "metadata", "aov_handle",
-        "colour_space", "fps", "available_versions", "available_aovs",
-    )
     result = OpenClipReader().execute(
         clip_path=clip_path, version="current", start_frame=-1, end_frame=-1, path_from="", path_to="",
     )["result"]
-    return dict(zip(names, result))
+    out = named_result(OpenClipReader, result)
+    # 1.x's text output, rebuilt from clip_info so the AOV assertions below read the same.
+    out["available_aovs"] = "\n".join(out["info.aovs"])
+    out["colour_space"] = out["info.colour_space"]
+    return out
 
 
 def _chain(*entries: tuple) -> list:
@@ -848,19 +850,20 @@ def test_aov_writer_requires_exactly_one_of_image_matte():
 def test_colour_space_round_trips_through_writer_and_reader(tmp_path):
     (clip_path,) = OpenClipWriter().execute(
         IMAGE=torch.rand(1, 32, 32, 3),
-        CLIP_METADATA={"oiio:ColorSpace": "Log3G10 RedWideGamutRGB"},
+        clip_info={"colour_space": "Log3G10 RedWideGamutRGB", "metadata": {}},
         **_writer_kwargs(tmp_path, "colourspace"),
     )
     out = _reader_result(clip_path)
     assert out["colour_space"] == "Log3G10 RedWideGamutRGB"
 
 
-def test_colour_space_empty_when_not_carried(tmp_path):
+def test_colour_space_defaults_to_rec709_video_when_not_carried(tmp_path):
+    # 2.0: an empty Writer colour falls back to "Rec.709 video" (was "" in 1.x, issue #7).
     (clip_path,) = OpenClipWriter().execute(
         IMAGE=torch.rand(1, 32, 32, 3), **_writer_kwargs(tmp_path, "nocolourspace"),
     )
     out = _reader_result(clip_path)
-    assert out["colour_space"] == ""
+    assert out["colour_space"] == "Rec.709 video"
 
 
 # --- Autodesk's published Open Clip examples (issue #4) ---
@@ -890,12 +893,14 @@ AUTODESK_EXPECTED = {
 }
 
 
+@pytest.mark.flame_clips
 def test_autodesk_expectations_cover_every_example():
     if not AUTODESK_DIR.is_dir():
         pytest.skip("tests/fixtures/autodesk_examples/ not present (gitignored)")
     assert sorted(p.name for p in AUTODESK_DIR.glob("*.clip")) == sorted(AUTODESK_EXPECTED)
 
 
+@pytest.mark.flame_clips
 @pytest.mark.parametrize("name", sorted(AUTODESK_EXPECTED))
 def test_autodesk_example(name):
     clip = AUTODESK_DIR / name
@@ -908,16 +913,16 @@ def test_autodesk_example(name):
             OpenClipReader().execute(**kw)
         return
     n, start, version_name, stem = expected
-    r = OpenClipReader().execute(**kw)["result"]
-    images, frame_count, width, height = r[0], r[2], r[3], r[4]
-    assert (frame_count, width, height) == (n, 1920, 1080)
-    assert images.shape == (n, 1080, 1920, 3)
-    assert (r[5], r[6], r[7]) == ("9", version_name, start)
-    assert r[9] == clip.stem  # no root <name> in any of these -> file stem
-    assert Path(r[11]["abs_pattern"]).name.startswith(stem + ".")
-    assert r[13] == 24.0  # no <editRate> -> default
+    r = named_result(OpenClipReader, OpenClipReader().execute(**kw)["result"])
+    assert (r["frame_count"], r["width"], r["height"]) == (n, 1920, 1080)
+    assert r["IMAGE"].shape == (n, 1080, 1920, 3)
+    assert (r["info.format_version"], r["info.version_name"], r["info.start_frame"]) == ("9", version_name, start)
+    assert r["info.clip_name"] == clip.stem  # no root <name> in any of these -> file stem
+    assert Path(r["aov_handle"]["abs_pattern"]).name.startswith(stem + ".")
+    assert r["fps"] == 24.0  # no <editRate> -> default
 
 
+@pytest.mark.flame_clips
 def test_autodesk_movie_clips_still_parse():
     clip = AUTODESK_DIR / "One_Track.clip"
     if not clip.exists():

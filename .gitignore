@@ -30,4 +30,8 @@ samples/
 node.zip
 testclips/
 tests/fixtures/autodesk_examples/
+# Real Flame clips for the full tier (tests/flame_clips.md); not redistributable
+tests/fixtures/flame/
+# Maintainer-run result files (scripts/maintainer_test.sh)
+openclip-test-*.json
 .agent-status/

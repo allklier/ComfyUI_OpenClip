@@ -1,6 +1,10 @@
 # Promote a release after manual verification (policy C, docs/ci.md):
-# clears the pre-release flag and sets the notes' Status line to FULLY TESTED,
-# optionally adding one verification line. Run by hand:
+# clears the pre-release flag and sets the notes' Status line to FULLY TESTED.
+# A minor/major release must carry the maintainer run's result file
+# (openclip-test-<tag>.json, `gh release upload <tag> openclip-test-<tag>.json`):
+# the gate refuses unless it is for this tag and commit, full tier, PASS, with
+# real Flame clips tested, and adds its verification line. A patch release is
+# exempt. The free-text input adds the Flame line. Run by hand:
 # Actions -> promote -> Run workflow.
 name: promote
 
@@ -12,7 +16,7 @@ on:
         required: true
         type: string
       verification:
-        description: 'Optional line to add, e.g. "Acceptance (live ComfyUI): ✔ akflame5, 2026-11-02"'
+        description: 'Optional line to add (the Flame check, docs/FLAME_TEST.md), e.g. "Flame 2027: ✔ 2026-11-02"'
         required: false
         type: string
         default: ""
@@ -41,8 +45,22 @@ jobs:
         run: |
           set -euo pipefail
           D="$RUNNER_TEMP/promote"; mkdir -p "$D"
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "::error::tag $TAG is not vX.Y.Z"; exit 1; fi
+          gh api --paginate "repos/$REPO/git/matching-refs/tags/v" --jq '.[].ref | sub("^refs/tags/"; "")' > "$D/tags"
+          # The commit the tag points to (an annotated tag is one more hop).
+          ref_json=$(gh api "repos/$REPO/git/ref/tags/$TAG")
+          tag_sha=$(jq -r .object.sha <<<"$ref_json")
+          if [ "$(jq -r .object.type <<<"$ref_json")" = tag ]; then
+            tag_sha=$(gh api "repos/$REPO/git/tags/$tag_sha" --jq .object.sha)
+          fi
+          # The result file, if uploaded; the gate decides whether it is needed.
+          result="openclip-test-$TAG.json"
+          gh release download "$TAG" --repo "$REPO" --pattern "$result" --dir "$D" || true
+          python3 .github/scripts/release_plan.py gate --tag "$TAG" --tags-file "$D/tags" \
+            --tag-commit "$tag_sha" --result-file "$D/$result" --line-out "$D/line"
+
           gh release view "$TAG" --repo "$REPO" --json body --jq .body > "$D/before.md"
-          python3 .github/scripts/release_plan.py promote --notes-in "$D/before.md" \
-            --notes-out "$D/after.md" --verification "$VERIFICATION"
+          python3 .github/scripts/release_plan.py promote --notes-in "$D/before.md" --notes-out "$D/after.md" \
+            --verification "$(cat "$D/line")" --verification "$VERIFICATION"
           gh release edit "$TAG" --repo "$REPO" --prerelease=false --notes-file "$D/after.md"
           { echo "Promoted $TAG"; echo; echo '```diff'; diff "$D/before.md" "$D/after.md" || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
