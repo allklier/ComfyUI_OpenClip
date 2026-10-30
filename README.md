@@ -103,7 +103,7 @@ The node has the following outputs:
 - fps: frame rate indicated in the file.
 - clip_report: the report also shown inside the node: clip, format and colour, start timecode and frame range, then one line per version and per AOV, so names can be copied.
 
-The colour space is taken from the .clip (`colourSpace`), else from the EXR header (`autodeskColorSpace`, then the OIIO keys). The start timecode is taken from the .clip (`startTimecode`), else from the EXR timecode of the version's first frame (Autodesk's example clips carry it only there); it is the clip's start also when a sub-range is read.
+The colour space is taken from the .clip (`colourSpace`), else from the EXR header (`autodeskColorSpace`, then the OIIO keys). The start timecode is taken from the .clip (`startTimecode`), else from the EXR timecode of the version's first frame (Autodesk's example clips carry it only there); for a Reader `start_frame`/`end_frame` window it is the timecode of the window's first frame (frame 3 of a clip at 01:00:00:00 gives 01:00:00:02), so a windowed clip cut back in lines up; a window written back to its source clip is refused as a timecode mismatch, so give it a new `clip_name`. `clip_report` lists the versions in the order the .clip file has them.
 
 All versions of a clip must have the same size: the Reader refuses a clip whose versions differ in width or height (Flame allows it) and lists each version's size, because switching versions would change the image size inside the workflow. Export the versions of another size as a separate clip.
 

@@ -28,6 +28,7 @@ CASES = [
               next_version="v02"),
     FlameLike("tc_drop_2997", fps="29.97", tc="01:00:00;00"),
     FlameLike("tc_drop_2997_odd_minute", fps="29.97", tc="00:01:00;02"),
+    FlameLike("tc_drop_minute_edge", fps="29.97", tc="00:00:59;28", n=6),  # a window crosses the dropped frames
     FlameLike("tc_drop_5994", fps="59.94", tc="00:10:00;00"),          # no EXR timecode above 30
     FlameLike("tc_pal", fps="25", tc="10:00:00:00"),
     FlameLike("tc_numbered_86400", fps="24", tc="01:00:00:00", start=86400, padding=8),
@@ -82,6 +83,14 @@ def test_new_clip_matches_the_source_field_by_field(case_clip, tmp_path):
     diffs, written = new_clip_check(clip, tmp_path / "out")
     assert diffs == []
     assert load(written).find("tracks/track/feeds/feed").get("vuid") == "v001"  # a new clip starts at v001
+
+
+def test_window_read_starts_at_its_own_first_frames_timecode(case_clip, tmp_path):
+    """Issue #8 (Beak): a Reader window starting partway in (frames 3..) writes a clip whose start
+    timecode, in the XML and in every EXR frame, is that frame's, not the source clip's start."""
+    case, clip = case_clip
+    diffs, written = new_clip_check(clip, tmp_path / "out", start_frame=case.start + 2)
+    assert diffs == []
 
 
 def test_append_matches_the_source_and_leaves_flames_elements_alone(case_clip):

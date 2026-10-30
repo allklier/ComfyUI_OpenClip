@@ -180,7 +180,12 @@ def expected_feed(source: dict, *, first: int, count: int, exr_colour: str = "",
     smpte:TimeCode of the source feed's first frame, the start timecode when the XML has none."""
     rate = source["edit_rate"] or source["sample_rate"] or WRITER_DEFAULT_RATE
     tc_rate = round(rate)
-    tc = source["tc"] or exr_tc_field(exr_tc_word, tc_rate) or (tc_rate, 0, "NDF")
+    tc = source["tc"] or exr_tc_field(exr_tc_word, tc_rate)
+    if tc is not None and source.get("first") is not None:
+        # The start timecode belongs to the first frame read: a window starting `first - source
+        # first` frames into the source starts that many frames after the source's timecode.
+        tc = (tc[0], tc[1] + (first - source["first"]), tc[2])
+    tc = tc or (tc_rate, 0, "NDF")
     return {
         "edit_rate": rate,
         "sample_rate": rate,

@@ -253,12 +253,55 @@ def test_reader_takes_the_exr_timecode_when_the_xml_has_none(tmp_path):
     assert "start TC 01:00:00:00" in r["clip_report"]
 
 
-def test_reader_exr_timecode_is_the_feeds_first_frame_also_for_a_sub_range(tmp_path):
-    """The clip's start is its feed's first frame (01:00:00:00 at frame 1), not the first frame
-    read (frame 2 carries 01:00:00:01): the same rule as for the XML value."""
+def test_reader_timecode_is_the_first_frame_reads_also_for_a_window_exr_only(tmp_path):
+    """Issue #8: clip_info's start timecode belongs to its start_frame. Frame 2 of a clip starting at
+    01:00:00:00 carries 01:00:00:01 in its own header; read from there, that is the start."""
     clip = _flame_clip(tmp_path, with_tc=False)
-    assert _read(clip, start_frame=2)["clip_info"]["start_timecode"] == "01:00:00:00"
-    assert _read(clip, start_frame=2)["clip_info"]["start_frame"] == 2
+    info = _read(clip, start_frame=2)["clip_info"]
+    assert (info["start_frame"], info["start_timecode"]) == (2, "01:00:00:01")
+
+
+def test_reader_timecode_is_the_first_frame_reads_also_for_a_window_xml(tmp_path):
+    clip = _flame_clip(tmp_path, n=9)
+    assert _read(clip)["clip_info"]["start_timecode"] == "01:00:00:00"  # the whole clip: its start
+    assert _read(clip, start_frame=3, end_frame=6)["clip_info"]["start_timecode"] == "01:00:00:02"
+    assert _read(clip, frame_cap=4)["clip_info"]["start_timecode"] == "01:00:00:00"  # cap only shortens
+    # The report names the same timecode as clip_info.
+    assert "start TC 01:00:00:02" in _read(clip, start_frame=3)["clip_report"]
+
+
+def test_reader_window_timecode_in_drop_frame_crosses_the_dropped_frames(tmp_path):
+    from ComfyUI_OpenClip.nodes.reader import feed_start_timecode
+    from ComfyUI_OpenClip.lib.openclip_xml import ClipSpan, ClipVersion
+    v = ClipVersion(uid="v0", name="v0", spans=[ClipSpan(path="x.%d.exr", start_frame=1, duration=9)],
+                    start_timecode="00:00:59;28")
+    assert [feed_start_timecode(v, "x.%d.exr", 29.97, f) for f in (1, 2, 3, 4)] == \
+        ["00:00:59;28", "00:00:59;29", "00:01:00;02", "00:01:00;03"]
+    assert feed_start_timecode(v, "x.%d.exr", 29.97) == "00:00:59;28"  # no frame: the clip's start (Writer)
+
+
+def test_window_read_written_back_to_the_source_clip_is_refused(tmp_path):
+    """The default wiring appends to the source clip. A window starting 2 frames in has another
+    start timecode than the clip's other versions (Beak's "No Media" in the timeline), so the
+    append rule refuses it and nothing is written; a new clip_name works."""
+    clip = _flame_clip(tmp_path, n=9)
+    info = _read(clip, start_frame=3, end_frame=6)["clip_info"]
+    before = clip.read_bytes()
+    with pytest.raises(ValueError, match="START TIMECODE MISMATCH"):
+        _write(n=4, clip_info=info)
+    assert clip.read_bytes() == before
+    out = _write(n=4, clip_info=info, clip_path=str(tmp_path / "out"), clip_filename="$(path)/$(clip_name)_win.clip")
+    assert _ticks(_feeds(out)[-1]) == 86402
+
+
+def test_reader_lists_versions_in_the_files_order(tmp_path):
+    """Issue #8: Flame numbers v0, v02, v1 in creation order; sorting the names scrambled them."""
+    from ComfyUI_OpenClip.tests.flame_fixtures import FlameLike, build
+    clip = build(FlameLike(id="m", name="mix", versions=("v0", "v02", "v1")), tmp_path)
+    r = _read(clip)
+    assert r["clip_info"]["versions"] == ["v0", "v02", "v1"]
+    report = r["clip_report"]
+    assert report.index("  v0\n") < report.index("  v02\n") < report.index("  v1 ")
 
 
 def test_reader_xml_timecode_wins_over_the_exr(tmp_path):

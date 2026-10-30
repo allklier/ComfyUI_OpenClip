@@ -19,4 +19,4 @@ Record:
 
 | Date | Flame version | Release / commit | Steps passed | Notes |
 |---|---|---|---|---|
-| | | | | |
+| 2026-10-30 | 2024.1 (Beak, via PR #8) | v2.0.0 / 1f1a489 | 1, 2, 3, 4, 5 | New clip imports at 01:00:00:00 (23.976, 118 frames, `Rec.709 video`); Flame added v02/v03 and ComfyUI v04 on top of v1, all at 01:00:00:00 and the Reader opens the five-version clip; append to the Flame clip gives v0 + v1, 118 frames (no more 86,409); colour tag on every version; trailing space lands in `fast walk .clip`. Extra: append from a 00:00:00:00 clip refused; pixels bit-exact. Found: a Reader window lost its timecode offset (fixed in 2.0.1) |

@@ -55,18 +55,33 @@ def _resolve_read_plan(clip_path: str, version: str, start_frame: int, end_frame
     return clip_path, parsed, clip_version, abs_pattern, resolved_start, resolved_end
 
 
-def feed_start_timecode(clip_version: openclip_xml.ClipVersion, abs_pattern: str, fps: float) -> str:
-    """The feed's <startTimecode>; when it has none, the smpte:TimeCode in the header of the
-    feed's own first frame (Autodesk's example clips carry their timecode only there). The
-    feed's first frame, not the first frame read, so a sub-range read still reports the clip's
-    start, as with the XML value. Never derived from a frame number. "" when neither exists
-    (or the frame isn't there, or the rate is above 30: see timecode.from_smpte_bcd).
-    Shared with OpenClipWriter's append check, so both see the same timecode."""
+def feed_start_timecode(clip_version: openclip_xml.ClipVersion, abs_pattern: str, fps: float,
+                        frame: int | None = None) -> str:
+    """The timecode of `frame` (a frame number of the feed; default the feed's first frame, i.e.
+    the clip's start). From the feed's <startTimecode> plus the frames between its first frame
+    and `frame` (drop-frame counted by timecode.format_tc); when the feed has no
+    <startTimecode>, the smpte:TimeCode in that frame's own header (Autodesk's example clips carry
+    their timecode only there). "" when neither exists (or the frame isn't there, or the rate is
+    above 30: see timecode.from_smpte_bcd). A timecode is never worked out from a frame number
+    alone: the offset is added to a real timecode.
+    Called without `frame` by OpenClipWriter's append check, which needs the clip's start; the
+    Reader passes the first frame it reads, since clip_info's start timecode belongs to its
+    start_frame (a window read from frame 3 starts 2 frames after the clip, 2026-10-30)."""
+    first = clip_version.spans[0].start_frame if clip_version.spans else None
+    if frame is None:
+        frame = first
     if clip_version.start_timecode:
-        return clip_version.start_timecode
-    if not clip_version.spans:
+        if first is None or frame is None or frame <= first:
+            return clip_version.start_timecode
+        rate = timecode.tc_rate(fps)
+        try:
+            ticks, drop = timecode.parse_tc(clip_version.start_timecode, rate)
+        except ValueError:
+            return clip_version.start_timecode
+        return timecode.format_tc(ticks + (frame - first), rate, drop)
+    if frame is None:
         return ""
-    word = image_io.frame_timecode(image_io.frame_path(abs_pattern, clip_version.spans[0].start_frame))
+    word = image_io.frame_timecode(image_io.frame_path(abs_pattern, frame))
     if word is None:
         return ""
     try:
@@ -181,7 +196,7 @@ class OpenClipReader:
             "clip_name": parsed.clip_name,
             "version_name": clip_version.name,
             "start_frame": resolved_start,
-            "start_timecode": feed_start_timecode(clip_version, abs_pattern, fps),
+            "start_timecode": feed_start_timecode(clip_version, abs_pattern, fps, resolved_start),
             "fps": fps,
             "colour_space": colour_space,
             "format_version": parsed.schema_version,
@@ -194,7 +209,7 @@ class OpenClipReader:
             "width": width,
             "height": height,
             "frame_count": frame_count,
-            "versions": sorted(parsed.versions.keys()),
+            "versions": list(parsed.versions),  # the file's order (Flame's creation order)
             "current_version": parsed.current_version,
             # Header-only (no pixel decode) -- see image_io.probe_aov_names. One
             # representative frame, assumes AOV presence doesn't vary frame to frame.

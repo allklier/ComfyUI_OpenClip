@@ -13,9 +13,9 @@ from .flame_compare import (append_diffs, current_vuid, exr_attrs, expected_feed
                             load, new_clip_diffs, source_media_pattern)
 
 
-def read(clip, frame_cap: int = -1) -> dict:
-    r = OpenClipReader().execute(clip_path=str(clip), version="current", start_frame=-1, end_frame=-1,
-                                 path_from="", path_to="", frame_cap=frame_cap)
+def read(clip, frame_cap: int = -1, start_frame: int = -1, end_frame: int = -1) -> dict:
+    r = OpenClipReader().execute(clip_path=str(clip), version="current", start_frame=start_frame,
+                                 end_frame=end_frame, path_from="", path_to="", frame_cap=frame_cap)
     return named_result(OpenClipReader, r["result"])
 
 
@@ -41,11 +41,13 @@ def _source_exr(clip) -> tuple[str, str | None, int | None, int | None]:
     return attrs.get("autodeskColorSpace", ""), pattern, first, (tc[0] if tc is not None else None)
 
 
-def new_clip_check(src_clip, out_dir, frame_cap: int = -1) -> tuple[list[str], str]:
-    """Read src_clip's current version, write it as a new clip into out_dir, compare."""
+def new_clip_check(src_clip, out_dir, frame_cap: int = -1, start_frame: int = -1,
+                   end_frame: int = -1) -> tuple[list[str], str]:
+    """Read src_clip's current version (all of it, or the window start_frame..end_frame), write it
+    as a new clip into out_dir, compare."""
     src = feed_fields(src_clip)
     exr_colour, pattern, src_first, tc_word = _source_exr(src_clip)
-    r = read(src_clip, frame_cap)
+    r = read(src_clip, frame_cap, start_frame, end_frame)
     written = write(r, src, clip_path=str(out_dir))
     first, count = r["info.start_frame"], r["frame_count"]
     diffs = new_clip_diffs(src_clip, written, first=first, count=count, exr_colour=exr_colour, exr_tc_word=tc_word)

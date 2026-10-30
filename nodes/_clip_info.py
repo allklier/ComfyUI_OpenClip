@@ -6,8 +6,9 @@ Keys (all always present):
   clip_name       <name> from the .clip, never stripped; the filename stem for a sequence
   version_name    the version actually read ("" for a sequence)
   start_frame     first frame actually read
-  start_timecode  "HH:MM:SS:FF" from the feed's <startTimecode>, else its first frame's EXR
-                  smpte:TimeCode ("" when none)
+  start_timecode  "HH:MM:SS:FF" of the first frame read: the feed's <startTimecode> plus the
+                  frames from the feed's first frame, else that frame's EXR smpte:TimeCode
+                  ("" when none)
   fps             exact frame rate (FLOAT)
   colour_space    see OpenClipReader for the lookup order ("" when none)
   format_version  Open Clip schema version ("" for a sequence)

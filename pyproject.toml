@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "comfy-openclip"
-version = "2.0.0"
+version = "2.0.1"
 description = "OpenClip read/write nodes for ComfyUI - file exchange with Flame"
 requires-python = ">=3.10"
 license = { file = "LICENSE.txt" }
