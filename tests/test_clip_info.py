@@ -459,7 +459,7 @@ def test_clip_info_with_an_unwritable_schema_version_falls_back_to_6(tmp_path, c
 
 def test_writer_sockets_and_auto_defaults():
     types = OpenClipWriter.INPUT_TYPES()
-    assert list(types["optional"]) == ["MASK", "clip_info", "aov_chain"]
+    assert list(types["optional"]) == ["MASK", "clip_info", "aov_chain", "path_mode"]  # path_mode: an optional widget
     req = types["required"]
     assert [k for k, v in req.items() if v[0] in ("IMAGE",)] == ["IMAGE"]
     assert {k: req[k][1]["default"] for k in ("clip_path", "clip_name", "start_frame", "start_timecode", "fps",

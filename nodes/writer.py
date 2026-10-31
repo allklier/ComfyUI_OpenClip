@@ -56,13 +56,14 @@ class OpenClipWriter:
                 "exr_compression": (["auto", *COMPRESSIONS], {"tooltip": _AUTO + DEFAULT_COMPRESSION + " (also when the source's compression is not one of these)"}),
                 "aov_layout": (["Multichannel", "Separate Files"],),
                 "publish": ("BOOLEAN", {"default": False}),
-                # Last, so saved workflows (positional widget values) keep their meaning.
-                "path_mode": (["relative", "absolute"], {"tooltip": "How the new version's media path is stored in the .clip. relative: to the .clip's folder, so the clip and its media can be moved or copied to another system"}),
             },
             "optional": {
                 "MASK": ("MASK",),
                 "clip_info": ("CLIP_INFO",),
                 "aov_chain": ("AOV_WRITE_CHAIN",),
+                # A widget, but optional: API-format prompts written before 2.0.2 do not carry it
+                # (a missing required input is rejected), and saved workflows keep their widget order.
+                "path_mode": (["relative", "absolute"], {"tooltip": "How the new version's media path is stored in the .clip. relative: to the .clip's folder, so the clip and its media can be moved or copied to another system"}),
             },
             "hidden": {
                 "extra_pnginfo": "EXTRA_PNGINFO",

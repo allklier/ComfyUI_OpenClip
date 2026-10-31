@@ -44,7 +44,8 @@ import OpenImageIO as oiio
 
 RESULTS: list[tuple[str, bool, str]] = []
 NODES = {"OpenClipReader", "OpenClipWriter", "OpenClipExrSequenceReader", "OpenClipAOVReader",
-         "OpenClipAOVWriter", "OpenClipColourSpaceTransform", "OpenClipColourTransform", "OpenClipClipInfo"}
+         "OpenClipAOVWriter", "OpenClipColourSpaceTransform", "OpenClipColourTransform", "OpenClipClipInfo",
+         "OpenClipExrSequenceWriter"}
 
 # Reader / EXR Sequence Reader output slots (2.0)
 IMAGE, MASK, CLIP_INFO, AOV_HANDLE, FRAME_COUNT, WIDTH, HEIGHT, FPS, CLIP_REPORT = range(9)
@@ -213,7 +214,7 @@ def test1_load(srv: Server, server_log: str, mode: str) -> None:
     bad = [l for l in log.splitlines() if "OpenClip" in l and ("Traceback" in l or "IMPORT FAILED" in l or "Cannot import" in l)]
     record(f"T1[{mode}] no OpenClip import failure/traceback in server log", not bad, "; ".join(bad)[:300])
     ins = info.get("OpenClipWriter", {}).get("input", {})
-    sockets = sorted(ins.get("optional", {}))
+    sockets = sorted(k for k in ins.get("optional", {}) if k != "path_mode")  # path_mode is an optional widget
     record(f"T1[{mode}] Writer sockets are MASK, clip_info, aov_chain (2.0)", sockets == ["MASK", "aov_chain", "clip_info"],
            f"optional={sockets}")
     outs = info.get("OpenClipReader", {}).get("output_name", [])
