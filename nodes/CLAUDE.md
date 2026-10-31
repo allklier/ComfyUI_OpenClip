@@ -189,6 +189,34 @@ Reads a plain EXR frame sequence with no `.clip` wrapper (Blender, Nuke). 2.0: t
 
 ---
 
+### `OpenClipExrSequenceWriter` — `exr_sequence_writer.py` ("OpenClip EXR Sequence Writer", 2026-10-31)
+
+Writes `<folder>/<name>.%0Nd.exr` with **no `.clip` file** (user decision). Counterpart of `OpenClipExrSequenceReader`. Reference notes: `docs/exr_sequence_writer.md`.
+
+**Sockets** `IMAGE`, `MASK`, `clip_info`, `aov_chain` (+ `aov_layout`), as `OpenClipWriter`. **Auto fields**, same rule and defaults as the Writer (constants imported from `writer.py`): `folder` `""` → `clip_info["clip_path"]` (its folder when it is a `.clip` file, i.e. from `OpenClipReader`), else required; `name` `""` → `clip_info["clip_name"]`, else required, never trimmed; `start_frame` -1 → 1; `start_timecode` `""` → 00:00:00:00 (no existing clip to inherit from); `fps` 0 → 24; `frame_padding` 0 → 4; `colour_space` `""` → `Rec.709 video`; `exr_bit_depth`/`exr_compression` `auto`. No `file_format` (EXR only), no `layout`, `publish`, `format_version` or `clip_filename`.
+
+**Versioning comes from the name, not a separate setting.** The rightmost `v<digits>` delimited by `_`/`.`/start/end (`_VERSION_TOKEN_RE`; `shot_v01`, `shot.v001`, `shot_v1_comp`; not `shotv01`, `shot-v01`, `V01`) makes the name versioned:
+- `version_name` `"next"` (default, never from `clip_info`): lists `<head>v<digits><tail>.<digits>.exr` in the folder (`_versions_on_disk`) and takes `openclip_xml.next_version()` of what it finds (one past the highest, its padding); nothing found → the name's own token;
+- a typed `version_name` must be `v<digits>` and replaces the token (anything else raises: it would leave a name the next `"next"` can't see);
+- no token → the name is used as is, `version_name` is ignored (printed warning if not `"next"`).
+
+**Collision**: any existing `<stem>.<digits>.exr` (glob-escaped, then a digit regex) refuses the write (`VERSION ALREADY EXISTS` when versioned, `SEQUENCE ALREADY EXISTS` otherwise, with a fix-it list) unless `overwrite`, which deletes those frames first. Separate Files AOV siblings (`<stem>_AOV_*`) are neither versions nor collisions and are not deleted on overwrite (same as `OpenClipWriter._delete_existing_frames`).
+
+**Validation before disk**: folder present and absolute, plain-name check on `name`/`version_name` (same rule as the Writer's `_check_name_component`), fps (`fps_label_from_float`), timecode text, AOV layout and duplicate names, `MAX_FRAMES`, `version_name` format. The AOV and `MAX_FRAMES` checks repeat what `write_sequence` does, because an overwrite deletes old frames before `write_sequence` runs.
+
+**Header metadata**: `write_sequence(..., colour_space=, start_timecode=, fps_rational=)`, so every frame gets `framesPerSecond`, its own `smpte:TimeCode` (up to 30 fps), the colour keys, and `clip_info["metadata"]`.
+
+| Output | Type | Notes |
+|---|---|---|
+| `sequence_path` | `STRING` | `<folder>/<stem>.####.exr`, wireable into `OpenClipExrSequenceReader.sequence_path` |
+| `first_frame_path` | `STRING` | |
+| `folder`, `name` | `STRING` | `name` is the stem actually written (version resolved) |
+| `version_name` | `STRING` | resolved version, `""` when the name has no token |
+
+`OUTPUT_NODE = True`, no `IS_CHANGED` (as `OpenClipWriter`).
+
+---
+
 ### `OpenClipClipInfo` — `clip_info.py` ("OpenClip Clip Info", 2.0)
 
 Unpacks a reader's `clip_info` into one output per value, for wiring single values elsewhere (e.g. `colour_space` into `OpenClipColourSpaceTransform`'s `same_as_input_colour_space`). The Writer takes `clip_info` whole and doesn't need it.

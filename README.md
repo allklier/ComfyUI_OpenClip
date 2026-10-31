@@ -72,6 +72,7 @@ And these settings. "Auto" means: taken from clip_info when it is connected, els
 - exr_bit_depth (auto: the source's EXR bit depth from clip_info, else half (16-bit)), exr_compression (auto: the source's compression from clip_info, else ZIP; also ZIP when the source uses one not in the list): EXR specific.
 - aov_layout: `Multichannel` writes each AOV as a named part inside the same EXR file; `Separate Files` writes one extra `<name>_AOV_<aov>.####.exr` file per AOV.
 - publish: if selected, a copy of the JSON file of the current ComfyUI workflow will be copied next to the version's frames.
+- path_mode (relative, default): stores the new version's media path in the `.clip` relative to the `.clip` file's folder, so the clip and its media folder can be copied or moved to another system (or user) and still read in Flame and in the Reader. `absolute` stores the full path. Entries already in an existing `.clip` are left as they are.
 
 When adding a version to an existing clip, the Writer checks before writing anything, so a refused run leaves nothing on disk:
 
@@ -89,7 +90,7 @@ The reader node has the following inputs/settings:
 - clip_path: the full filename of the .clip file to be read.
 - version: the version to be read (defaults to 'current', based on which version is marked as current in .clip file)
 - end_frame/start_frame: select a specific frame range to be read (-1 means the clip's own range)
-- path_from/path_to: replace a path prefix in the media paths stored in the .clip (leave blank to auto-detect, e.g. when a clip made on another machine points at a different mount).
+- path_from/path_to: replace a path prefix in the media paths stored in the .clip (leave blank to auto-detect, e.g. when a clip made on another machine points at a different mount). Auto-detect matches the tail of the stored path against the `.clip`'s own folder (a media subfolder, or frames sitting right beside the `.clip`), so a clip copied to another system still reads when Flame stored an absolute path for a version. To switch it off, type a `path_from`/`path_to` pair.
 - frame_cap: read at most this many frames (-1 = no cap).
 
 The node has the following outputs:
@@ -111,6 +112,13 @@ The Reader also takes an optional frame range and version. Queue the Reader alon
 
 ### OpenClip EXR Sequence Reader
 Reads plain `name.####.exr` sequences with no `.clip` file, such as Blender renders (including Blender's single-part "OpenEXR MultiLayer" layout) or Nuke output. Has the same outputs as the OpenClip Reader, so the two can be swapped behind a switch node. Its clip_info has no version or schema version; its start timecode is the first frame's EXR timecode, if it has one. Wired into a Writer, it writes `<folder>/<name>.clip`.
+
+### OpenClip EXR Sequence Writer
+Writes a plain `<folder>/<name>.####.exr` sequence with no `.clip` file, the counterpart of the EXR Sequence Reader. Takes IMAGE, an optional MASK, clip_info and aov_chain, and has the same "auto" fields as the OpenClip Writer (folder, name, start_frame, start_timecode, fps, frame_padding, colour_space, exr_bit_depth, exr_compression; taken from clip_info when connected, else the Writer's defaults). Every frame gets the frame rate, its own timecode and the colour tag in its EXR header, plus the header metadata carried in clip_info.
+
+Versioning is optional and comes from the name: a `v<digits>` token separated by `_` or `.` (`shot_v01`, `shot.v001`, `shot_v1_comp`) makes it versioned. Then version_name `next` (the default) writes one past the highest version of the same name already in the folder, keeping its padding (`shot_v03` on disk → `shot_v04`; nothing on disk → the name as typed), and a typed version such as `v07` replaces the token. A name without a token is written as is and version_name is not used.
+
+Existing frames of the same name (and version) are never overwritten unless overwrite is on; then the old frames are deleted first, so a shorter re-render leaves none behind. Names must be plain (no `/`, `\`, `.` or `..`), and the folder must be an absolute path. Everything is checked before anything is written. Outputs: sequence_path (`<folder>/<name>.####.exr`, wireable into the EXR Sequence Reader), first_frame_path, folder, name and version_name (empty when not versioned).
 
 ### OpenClip Clip Info
 Takes a clip_info and outputs each value on its own socket (clip_path, clip_name, version_name, start_frame, start_timecode, fps, colour_space, format_version, frame_padding, metadata, bit_depth), plus the clip_report text.

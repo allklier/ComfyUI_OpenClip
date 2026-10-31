@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import glob
 import os
+import re
 from pathlib import Path
 
 from ..lib import image_io, openclip_xml, timecode
@@ -306,6 +308,8 @@ def _auto_remap(clip_path: str, media_pattern: str) -> tuple[str, str] | None:
     resolves to a real directory relative to the clip file. The longest-suffix
     (most specific) match wins, so a deep shared structure beats a shallow one.
 
+    Frames directly beside the .clip (no directory left to match) are found by filename.
+
     Returns (path_from, path_to) or None if no remap can be determined.
     """
     media_dir = Path(media_pattern).parent
@@ -327,5 +331,14 @@ def _auto_remap(clip_path: str, media_pattern: str) -> tuple[str, str] | None:
                 return path_from, str(clip_dir)
         except OSError:
             continue
+
+    # Last resort: the frames sit directly beside the .clip (Flat layout), so no directory
+    # name is left to match -- look for the frame files themselves.
+    frames = re.sub(r"%0\d+d", "\0", glob.escape(Path(media_pattern).name)).replace("\0", "*")
+    try:
+        if any(clip_dir.glob(frames)):
+            return str(media_dir), str(clip_dir)
+    except OSError:
+        pass
 
     return None

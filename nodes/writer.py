@@ -56,6 +56,8 @@ class OpenClipWriter:
                 "exr_compression": (["auto", *COMPRESSIONS], {"tooltip": _AUTO + DEFAULT_COMPRESSION + " (also when the source's compression is not one of these)"}),
                 "aov_layout": (["Multichannel", "Separate Files"],),
                 "publish": ("BOOLEAN", {"default": False}),
+                # Last, so saved workflows (positional widget values) keep their meaning.
+                "path_mode": (["relative", "absolute"], {"tooltip": "How the new version's media path is stored in the .clip. relative: to the .clip's folder, so the clip and its media can be moved or copied to another system"}),
             },
             "optional": {
                 "MASK": ("MASK",),
@@ -91,6 +93,7 @@ class OpenClipWriter:
         colour_space: str = "",
         layout: str = "Standard Flame",
         publish: bool = False,
+        path_mode: str = "relative",
         overwrite: bool = False,
         include_version_in_filename: bool = True,
         MASK: Optional[torch.Tensor] = None,
@@ -103,6 +106,8 @@ class OpenClipWriter:
     ):
         info = clip_info or {}
         _check_name_component(version_name, "version_name")
+        if path_mode not in ("relative", "absolute"):
+            raise ValueError(f"[OpenClipWriter] path_mode must be 'relative' or 'absolute', got '{path_mode}'")
 
         # --- resolve every auto field (see INPUT_TYPES) ---
         clip_path_in = clip_path.strip() or info.get("clip_path", "")
@@ -202,7 +207,7 @@ class OpenClipWriter:
         new_version = ClipVersion(
             uid=version_name,
             name=version_name,
-            spans=[ClipSpan(path=abs_pattern, start_frame=start_frame, duration=n_frames)],
+            spans=[ClipSpan(path=abs_pattern if path_mode == "absolute" else paths.path_pattern_token, start_frame=start_frame, duration=n_frames)],
             publish_path=sidecar_rel,
             start_timecode=start_tc,
         )

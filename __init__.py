@@ -6,6 +6,7 @@ from .nodes.clip_info import OpenClipClipInfo
 from .nodes.colour_space_transform import OpenClipColourSpaceTransform
 from .nodes.colour_transform import OpenClipColourTransform
 from .nodes.exr_sequence_reader import ExrSequenceReader
+from .nodes.exr_sequence_writer import OpenClipExrSequenceWriter
 from .nodes.reader import OpenClipReader
 from .nodes.writer import OpenClipWriter
 
@@ -16,6 +17,7 @@ NODE_CLASS_MAPPINGS = {
     "OpenClipColourSpaceTransform": OpenClipColourSpaceTransform,
     "OpenClipColourTransform": OpenClipColourTransform,
     "OpenClipExrSequenceReader": ExrSequenceReader,
+    "OpenClipExrSequenceWriter": OpenClipExrSequenceWriter,
     "OpenClipReader": OpenClipReader,
     "OpenClipWriter": OpenClipWriter,
 }
@@ -27,6 +29,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "OpenClipColourSpaceTransform": "OpenClip Colour Space Transform",
     "OpenClipColourTransform": "OpenClip Colour Transform",
     "OpenClipExrSequenceReader": "OpenClip EXR Sequence Reader",
+    "OpenClipExrSequenceWriter": "OpenClip EXR Sequence Writer",
     "OpenClipReader": "OpenClip Reader",
     "OpenClipWriter": "OpenClip Writer",
 }

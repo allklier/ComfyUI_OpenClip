@@ -500,7 +500,7 @@ def _parse_spans(feed: etree._Element, version_uid: str) -> list[ClipSpan]:
         if path_el is None:
             raise ValueError(f"Span {i} in version '{version_uid}' is missing <path>")
 
-        raw_path = (path_el.text or "").strip()
+        raw_path = (path_el.text or "").strip("\r\n\t")  # not spaces: a relative path can start with a clip name's own leading space
         start_el = span.find("startFrame")
         dur_el = span.find("duration")
 

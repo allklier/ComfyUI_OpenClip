@@ -411,7 +411,7 @@ def test_writer_defaults_without_clip_info(tmp_path):
     assert root.get("version") == "6"
     assert feed.findtext("sampleRate") == "24" and _ticks(feed) == 0
     assert feed.findtext("storageFormat/colourSpace") == "Rec.709 video"
-    assert feed.findtext("spans/span/path").endswith("/a/a_v001.[0001-0003].exr")  # start 1, padding 4
+    assert feed.findtext("spans/span/path").endswith("a/a_v001.[0001-0003].exr")  # start 1, padding 4
 
 
 def test_writer_takes_every_auto_field_from_clip_info(tmp_path):
@@ -423,7 +423,7 @@ def test_writer_takes_every_auto_field_from_clip_info(tmp_path):
     assert root.get("version") == "9" and root.findtext("name") == "woods walk "
     assert feed.findtext("sampleRate") == "23.976" and _ticks(feed) == 86400
     assert feed.findtext("storageFormat/colourSpace") == "Rec.709 video"
-    assert feed.findtext("spans/span/path").endswith("/woods walk /woods walk _v001.[000005-000007].exr")
+    assert feed.findtext("spans/span/path").endswith("woods walk /woods walk _v001.[000005-000007].exr")
 
 
 def test_writer_fields_override_clip_info(tmp_path):
@@ -436,7 +436,7 @@ def test_writer_fields_override_clip_info(tmp_path):
     assert root.get("version") == "7" and feed.findtext("sampleRate") == "25"
     assert (feed.findtext("startTimecode/rate"), _ticks(feed)) == ("25", 180000)
     assert feed.findtext("storageFormat/colourSpace") == "ACEScg"
-    assert feed.findtext("spans/span/path").endswith("/other/other_v001.[100-102].exr")
+    assert feed.findtext("spans/span/path").endswith("other/other_v001.[100-102].exr")
     frame = next((tmp_path / "out" / "other").glob("*.100.exr"))
     _, _, meta = image_io.read_sequence(str(frame), 0, 0, load_alpha=False)
     assert meta["openclip:ColorSpace"] == "ACEScg" and meta["autodeskColorSpace"] == "ACEScg"
@@ -700,7 +700,7 @@ def test_exr_sequence_clip_info_drives_a_new_clip(tmp_path):
     assert etree.parse(out).getroot().get("version") == "6"  # a sequence has no schema version
     assert feed.findtext("sampleRate") == "25" and _ticks(feed) == 0
     assert feed.findtext("storageFormat/colourSpace") == "lin_ap1_scene"
-    assert feed.findtext("spans/span/path").endswith("/render/render_v001.[00007-00008].exr")
+    assert feed.findtext("spans/span/path").endswith("render/render_v001.[00007-00008].exr")
 
 
 # --- the real Flame clip (testclips/, gitignored) -------------------------------------------------------------

@@ -930,3 +930,50 @@ def test_autodesk_movie_clips_still_parse():
     parsed = openclip_xml.parse(str(clip))
     assert parsed.current_version == "v0"
     assert parsed.versions["v0"].spans[0].path == "Media/MOV/OpenClip_v001.mov"
+
+
+def test_writer_path_mode_relative_survives_moving_the_clip(tmp_path):
+    """Relative is the default: the .clip holds no absolute path, so a copy elsewhere reads."""
+    import shutil
+
+    src = tmp_path / "a"
+    OpenClipWriter().execute(IMAGE=torch.rand(2, 8, 8, 3), clip_path=str(src), clip_name="c", fps=24.0)
+    clip = openclip_xml.parse(str(src / "c.clip"))
+    assert not os.path.isabs(clip.versions["v001"].spans[0].path)
+
+    shutil.copytree(src, tmp_path / "b")
+    shutil.rmtree(src)
+    out = named_result(OpenClipReader, OpenClipReader().execute(
+        clip_path=str(tmp_path / "b" / "c.clip"), version="current",
+        start_frame=-1, end_frame=-1, path_from="", path_to="")["result"])
+    assert out["IMAGE"].shape[0] == 2
+
+
+def test_writer_path_mode_absolute_and_invalid(tmp_path):
+    OpenClipWriter().execute(IMAGE=torch.rand(1, 8, 8, 3), clip_path=str(tmp_path), clip_name="c",
+                             fps=24.0, path_mode="absolute")
+    clip = openclip_xml.parse(str(tmp_path / "c.clip"))
+    assert os.path.isabs(clip.versions["v001"].spans[0].path)
+    with pytest.raises(ValueError, match="path_mode"):
+        OpenClipWriter().execute(IMAGE=torch.rand(1, 8, 8, 3), clip_path=str(tmp_path), clip_name="d",
+                                 fps=24.0, path_mode="bogus")
+    assert not (tmp_path / "d.clip").exists()
+
+
+@pytest.mark.parametrize("layout", ["Standard Flame", "Flat"])
+@pytest.mark.parametrize("version_in_filename", [True, False])
+def test_reader_finds_a_moved_clips_absolute_media_by_its_tail(tmp_path, layout, version_in_filename):
+    """A clip copied elsewhere, its (Flame-written) absolute media path pointing at a vanished
+    folder: the Reader's auto-remap finds the media beside the .clip, in a subfolder or not."""
+    import shutil
+
+    src, dst = tmp_path / "userA" / "jobs" / "x", tmp_path / "userB" / "elsewhere"
+    OpenClipWriter().execute(IMAGE=torch.rand(2, 8, 8, 3), clip_path=str(src), clip_name="c", fps=24.0,
+                             path_mode="absolute", layout=layout,
+                             include_version_in_filename=version_in_filename)
+    shutil.copytree(src, dst)
+    shutil.rmtree(src)
+    out = named_result(OpenClipReader, OpenClipReader().execute(
+        clip_path=str(dst / "c.clip"), version="current",
+        start_frame=-1, end_frame=-1, path_from="", path_to="")["result"])
+    assert out["IMAGE"].shape[0] == 2

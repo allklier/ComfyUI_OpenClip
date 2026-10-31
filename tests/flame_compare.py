@@ -135,7 +135,7 @@ def feed_fields(clip, vuid: Optional[str] = None) -> dict:
     path_el = feed.find("spans/span/path")
     if path_el is None:
         path_el = feed.find("spans/span/paths/path")
-    path = (path_el.text or "").strip()
+    path = (path_el.text or "").strip("\r\n\t")
     m = _RANGE_RE.search(path)
     sf = feed.find("storageFormat")
     txt = lambda tag: (sf.findtext(tag) or "").strip() if sf is not None and sf.find(tag) is not None else None
@@ -375,6 +375,8 @@ def exr_frame_diffs(written_clip, vuid: str, *, expected_colour: str,
     root = load(written_clip)
     f = feed_fields(root, vuid)
     pattern = _RANGE_RE.sub(f"%0{f['padding']}d", f["path"])
+    if not os.path.isabs(pattern):  # relative paths are relative to the .clip's folder
+        pattern = str(Path(written_clip).parent / pattern)
     rate, ticks, mode = f["tc"]
     drop = mode == "DF"
     out = []
