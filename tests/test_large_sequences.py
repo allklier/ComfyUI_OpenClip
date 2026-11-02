@@ -112,9 +112,9 @@ def test_reader_node_frame_cap_on_a_long_clip(tmp_path):
 
     common = dict(clip_path=str(clip), version="current", path_from="", path_to="")
     full = OpenClipReader().execute(start_frame=-1, end_frame=-1, **common)["result"]
-    assert full[2] == n
+    assert full[4] == n
     capped = OpenClipReader().execute(start_frame=1100, end_frame=-1, frame_cap=10, **common)["result"]
-    assert capped[2] == 10 and capped[7] == 1100
+    assert capped[4] == 10 and capped[2]["start_frame"] == 1100
     assert torch.equal(capped[0][:, 0, 0, 0], full[0][99:109, 0, 0, 0])
 
 
@@ -128,7 +128,7 @@ def test_exr_sequence_reader_long_sequence_with_gaps_discovery(tmp_path):
     with pytest.raises(FileNotFoundError, match=r"gap\.0030\.exr"):
         ExrSequenceReader().execute(**kwargs)
     ok = ExrSequenceReader().execute(**{**kwargs, "end_frame": 29})["result"]
-    assert ok[2] == 29
+    assert ok[4] == 29
 
 
 def test_aov_reader_over_a_long_multipart_sequence(tmp_path, write_multipart_exr):
@@ -198,8 +198,8 @@ def test_uhd_fp32_multi_frame_round_trip_with_aov_and_timing(tmp_path):
     out = OpenClipReader().execute(clip_path=result[0], version="current", start_frame=-1, end_frame=-1,
                                    path_from="", path_to="")["result"]
     elapsed = time.perf_counter() - t0
-    assert out[2:5] == (n, w, h)
+    assert out[4:7] == (n, w, h)
     assert torch.equal(out[0], images)
-    _img, matte = OpenClipAOVReader().execute(out[11], "depth")
+    _img, matte = OpenClipAOVReader().execute(out[3], "depth")
     assert torch.equal(matte, depth)
     assert elapsed < 120, f"UHD fp32 3-frame round trip took {elapsed:.1f}s"

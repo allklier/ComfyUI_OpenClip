@@ -19,17 +19,11 @@ def _run(seq_dir, **overrides):
     return ExrSequenceReader().execute(**kwargs)["result"]
 
 
-def test_no_fake_openclip_only_outputs():
-    # format_version/version_name/available_versions are Open Clip-only concepts;
-    # a plain sequence has no version, so it doesn't pretend to have one.
-    assert not set(ExrSequenceReader.RETURN_NAMES) & {"format_version", "version_name", "available_versions"}
-
-
-def test_image_mask_align_with_openclip_reader_for_switching():
-    # IMAGE/MASK stay at the same slots as OpenClipReader so the two can sit behind
-    # an HM_ImageSwitch/HM_MaskSwitch interchangeably; nothing else is guaranteed to align.
-    assert ExrSequenceReader.RETURN_TYPES[:2] == OpenClipReader.RETURN_TYPES[:2] == ("IMAGE", "MASK")
-    assert ExrSequenceReader.RETURN_NAMES[:2] == OpenClipReader.RETURN_NAMES[:2] == ("IMAGE", "MASK")
+def test_outputs_match_openclip_reader():
+    # 2.0: the same 9 outputs as OpenClipReader; IMAGE/MASK at slots 0/1 (HM_ImageSwitch).
+    assert ExrSequenceReader.RETURN_TYPES == OpenClipReader.RETURN_TYPES
+    assert ExrSequenceReader.RETURN_NAMES == OpenClipReader.RETURN_NAMES
+    assert ExrSequenceReader.RETURN_NAMES[:2] == ("IMAGE", "MASK")
 
 
 @pytest.mark.parametrize("given, expected", [
@@ -48,9 +42,9 @@ def test_no_frame_token_raises():
 
 
 def test_reads_range_from_disk_and_fills_outputs(blender_multilayer_fixtures):
-    (images, masks, frame_count, width, height, start_frame,
-     clip_path, clip_name, metadata, aov_handle, colour_space, fps,
-     available_aovs) = _run(blender_multilayer_fixtures)
+    images, masks, info, aov_handle, frame_count, width, height, fps, report = _run(blender_multilayer_fixtures)
+    start_frame, clip_path, clip_name, colour_space = (
+        info["start_frame"], info["clip_path"], info["clip_name"], info["colour_space"])
 
     assert (frame_count, width, height, start_frame) == (3, 64, 64, 1)
     px = blender_frame_pixels(3)
@@ -58,23 +52,28 @@ def test_reads_range_from_disk_and_fills_outputs(blender_multilayer_fixtures):
     assert torch.allclose(masks[2], torch.from_numpy(px["CamelMatte.Combined.A"]), atol=1e-6)
     assert clip_path == str(blender_multilayer_fixtures) and clip_name == "render"
     assert colour_space == "lin_ap1_scene"  # from the header when the widget is blank
-    assert fps == 25.0
-    assert "ViewLayer.Normal" in available_aovs.split("\n")
+    assert fps == 25.0 and info["fps"] == 25.0
+    assert "ViewLayer.Normal" in info["aovs"]
+    # A sequence has no version, schema or start timecode.
+    assert (info["version_name"], info["format_version"], info["start_timecode"], info["versions"]) == ("", "", "", [])
+    assert info["frame_padding"] == 4
+    assert "VERSIONS" not in report and "  ViewLayer.Normal" in report.split("\n")
+    assert report.startswith(f"CLIP     render   ({blender_multilayer_fixtures}/render.%04d.exr)")
     assert (aov_handle["start_frame"], aov_handle["end_frame"]) == (1, 3)
 
 
 def test_frame_cap_and_explicit_range(blender_multilayer_fixtures):
-    assert _run(blender_multilayer_fixtures, frame_cap=2)[2] == 2
+    assert _run(blender_multilayer_fixtures, frame_cap=2)[4] == 2
     result = _run(blender_multilayer_fixtures, start_frame=2, end_frame=3)
-    assert (result[2], result[5]) == (2, 2)
+    assert (result[4], result[2]["start_frame"]) == (2, 2)
 
 
 def test_colour_space_widget_overrides_header(blender_multilayer_fixtures):
-    assert _run(blender_multilayer_fixtures, colour_space="ACEScg")[10] == "ACEScg"
+    assert _run(blender_multilayer_fixtures, colour_space="ACEScg")[2]["colour_space"] == "ACEScg"
 
 
 def test_aov_handle_feeds_openclip_aov_reader(blender_multilayer_fixtures):
-    aov_handle = _run(blender_multilayer_fixtures)[9]
+    aov_handle = _run(blender_multilayer_fixtures)[3]
     image, _matte = OpenClipAOVReader().execute(aov_handle, "ViewLayer.Normal")
     px = blender_frame_pixels(2)
     assert torch.allclose(image[1], torch.from_numpy(np.stack([px[f"ViewLayer.Normal.{c}"] for c in "XYZ"], -1)), atol=1e-6)

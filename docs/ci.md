@@ -30,10 +30,13 @@ scripts only through environment variables.
 - No ComfyUI is installed: the tests call the node classes directly
   (`tests/CLAUDE.md`). The checkout goes into a folder named
   `ComfyUI_OpenClip` because the tests import the repo under that package name.
-- Tests that need Autodesk's example clips (gitignored, not redistributable)
-  are skipped on CI.
-- Not covered: a live ComfyUI server, the frontend JS, Flame itself. Those
-  are the manual "Acceptance" and "Flame" lines in the release notes.
+- CI runs the **smoke tier** (`pytest` with no options = `--tier smoke`): unit
+  tests plus the synthetic Flame-like boundary cases (`tests/test_flame_like.py`).
+  Tests marked `flame_clips` (real Flame/Autodesk clips, gitignored, not
+  redistributable) are skipped with "full tier only"; with `--tier full` they
+  also skip per clip when the clips are absent, so the workflow needs no change.
+- Not covered on CI: the full tier, a live ComfyUI server, the frontend JS, Flame
+  itself. See "Test tiers and the maintainer run" below.
 
 ## Security scan (`security-scan.yml`)
 
@@ -117,13 +120,92 @@ Tags like `v1.2.0-rc1` don't match the strict format and fail in plan.
 
 ### Promote (`promote.yml`)
 
-After testing by hand (acceptance run on a live ComfyUI, Flame): Actions →
-**promote** → Run workflow, `tag` = the release, optional `verification` =
-one line to add, e.g. `Acceptance (live ComfyUI): ✔ akflame5, 2026-11-02`.
-It clears the pre-release flag, adds the line to the Verification list and
-sets `**Status: FULLY TESTED**`. It refuses releases whose notes have no
+After testing by hand: Actions → **promote** → Run workflow, `tag` = the
+release, optional `verification` = one line to add for the Flame check
+(`docs/FLAME_TEST.md`), e.g. `Flame 2027: ✔ 2026-11-02`. It first runs the
+**gate** (below): a minor or major release needs the maintainer run's result
+file on the release, and the line about that run is taken from the file. Then it
+clears the pre-release flag, adds the line(s) to the Verification list and sets
+`**Status: FULLY TESTED**`. It refuses releases whose notes have no
 Verification block written by `release.yml` (older, hand-written releases).
-The "– not run" lines stay as they are; the added line records what was done.
+The "– not run" lines stay as they are; the added lines record what was done.
+
+## Test tiers and the maintainer run
+
+| Tier | What | Where |
+|---|---|---|
+| smoke | unit tests + synthetic Flame-like cases | `tests.yml`, every push/PR/release (≈4 s) |
+| full | smoke + real-clip fidelity (`--tier full`) + live ComfyUI acceptance, normal and without OCIO + Flame checks when the bridge runs | `scripts/maintainer_test.sh`, on the ComfyUI test machine |
+| manual | 5 steps in Flame | `docs/FLAME_TEST.md` |
+
+Details and the reasons: `tests/CLAUDE.md` "Tiers".
+
+### Maintainer run
+
+```sh
+# from a checkout on the development machine; runs on the test host over ssh
+FLAME_CLIP=<a real Flame .clip on that host> \
+OPENCLIP_FLAME_CLIPS=<more .clip files or folders there, ':'-separated> \
+scripts/maintainer_test.sh v2.0.0 --host <test host>
+# or on the test host itself, from a checkout there
+scripts/maintainer_test.sh v2.0.0
+```
+
+It exports the ref with `git archive`, installs it into the private ComfyUI base
+(`~/oc_accept/base/custom_nodes/ComfyUI_OpenClip`; the shared ComfyUI install is only read),
+runs `pytest --tier full`, then starts the private ComfyUI (`acceptance/start_private_comfyui.sh`,
+port 8199, `--cpu`) and runs `acceptance/run_acceptance.py` normally and with OCIO blocked, and
+writes `openclip-test-<ref>.json` (ref, commit (full SHA), version, per-tier counts incl. how many
+real-clip tests ran, `overall` PASS/FAIL; no host or user names). For a release, run it with the
+tag as `<ref>` and upload the file to the release (see "Gating promote" below). With `--host` the file is
+copied back to `--out` (default: the current folder). Logs stay in `~/oc_accept/mt/logs/` on
+the test host. Real clips there: `~/oc_accept/flame_clips/` (the planned set, `tests/flame_clips.md`),
+`/opt/Autodesk/openclip_examples`, and `$OPENCLIP_FLAME_CLIPS`.
+
+**Flame checks** (2026-10-29). When Flame on the test host runs the
+flame-test-bridge hook (a local, unpublished repo: `~/ClaudeCode/flame-test-bridge`,
+deployed to `~/flame-test-bridge`; hook installed in `/opt/Autodesk/shared/python`) with the
+project `Claude_Test_Harness` open, the run also writes test clips with the ref's Writer and has
+Flame import them: start timecode, exact names, frame rate, size, an append onto a real Flame
+clip (`$FLAME_CLIP`), and Flame adding its own version to a Writer clip. Detected by a heartbeat
+younger than 30 s in `~/flame-test-bridge-run/`; otherwise `results.flame_checks` is
+`{"status": "not run", "reason": …}`. They count towards `overall` only when they ran.
+`FLAME_BRIDGE`/`FLAME_BRIDGE_RUN` override the two folders.
+
+### Gating promote on the result file
+
+Mirrors LTX Alpha Gen's `promote.sh`; the checks are `release_plan.py gate`
+(tested in `.github/scripts/test_release_plan.py`), `promote.yml` only fetches
+the inputs.
+
+1. Run the maintainer test **on the tag itself** (`scripts/maintainer_test.sh v2.0.0 --host <test host>`),
+   then attach the result to the release:
+
+   ```sh
+   gh release upload v2.0.0 openclip-test-v2.0.0.json
+   ```
+
+2. `promote.yml` downloads `openclip-test-<tag>.json` from the release assets and the gate
+   refuses unless `ref` = the tag, `commit` = the tag's commit (the script writes the full SHA;
+   an older file's short SHA of at least 7 characters is accepted as a prefix), `tier` = `full`,
+   `overall` = `PASS`, and `results.pytest_full.real_clip_tests.passed` > 0 (so a run without
+   any real clip can't promote). A missing or unreadable file refuses too, with the upload
+   command in the message.
+3. The Verification line about that run comes from the file:
+   `Full tier + live ComfyUI (maintainer run <timestamp>, <commit>): ✔ pytest <n> passed (real Flame clips <n>), acceptance <n>/<n>, without OCIO <n>/<n>, Flame <version> checks <n>/<n>`
+   (or `Flame checks not run`; the Flame checks are reported, not required).
+   The free-text `verification` input stays for the manual Flame line (`docs/FLAME_TEST.md`).
+
+**Exception: patch releases** (only Z of X.Y.Z changed against the previous vX.Y.Z tag, the
+same classification `release.yml` uses, `[pre-release]` marker or not) are exempt and promote
+as before, with no result file. The first release (no earlier tag) is not a patch and is gated.
+
+The tag's commit is resolved through the same GitHub API calls `release.yml` already uses
+(`git/ref/tags/<tag>`, and `git/tags/<sha>` → `.object.sha` for an annotated tag; checked
+read-only against `v1.1.1` on 2026-10-29: it gives `caae91f`, the same as
+`git rev-parse v1.1.1^{commit}`). `gh release download <tag> --pattern <file> --dir <dir>`
+per `gh release download --help` (gh 2.45). No new action, no new permission
+(the job already has `contents: write` to edit the release; reading assets needs only read).
 
 ## What is verified, and what isn't
 
@@ -132,7 +214,10 @@ The "– not run" lines stay as they are; the added line records what was done.
 | Tests and PR-mode security scan | ran green on the PR that added CI |
 | Release classification and notes | `.github/scripts/test_release_plan.py` (runs in `tests.yml`), including the repo's real tag list |
 | All workflows | `actionlint` 1.7.12 and `zizmor` 1.30.1 (`--offline`), the scanner's pinned versions. zizmor reports two low "self-repository" notes in `release.yml`; kept on purpose (comment in the file: the pinned actionlint rejects the suggested `$/` syntax) |
-| Dry run, tag push, publish, promote, weekly schedule | not run yet. Manual runs (dry run, promote, scan) and the schedule only work once the workflow file is on `master`, the default branch; a tag push uses the workflow at the tagged commit, and no tag was pushed while building this. First real use is the first release after merge |
+| Dry run, manual full scan | ran green on `master` after the merge (2026-10-28): the v1.1.1 dry run classified it as a patch (normal release) and printed the notes; the full scan found 0 high, 3 accepted risks, 2 low notes |
+| Tag push, tests + scan from the release, publish | v1.1.1 (2026-10-28): the release run passed tests and scan through the two-level call (`release.yml` → `security-scan.yml` → the scanner) and created the release with the multi-line notes intact |
+| Promote gate | `release_plan.py gate` unit tests (patch exempt; minor/major without, with a wrong and with a good result file); `actionlint` 1.7.12 and `zizmor` 1.30.1 on `promote.yml` (no new findings). The workflow itself has not run on GitHub |
+| Promote, weekly schedule | not run yet. The schedule first fires on a Monday at 05:17 UTC; promote is first used when a release is tested in Flame |
 
 Not decided by CI: whether GitHub moves the "Latest" badge when a
 pre-release is promoted (not checked).
