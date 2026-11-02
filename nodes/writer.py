@@ -298,8 +298,8 @@ def _check_append_timing(existing, clip_file: Path, ex_tc: str, start_tc: str, s
             f"'{clip_file}' starts at {ex_tc} (current version '{existing.current_version}'), "
             f"this write at {start_tc}. Flame would place the two versions apart in time.\n"
             f"Fix by one of:\n"
-            f"  - set start_timecode to {ex_tc}\n"
-            f"  - set a new clip_name to write a separate clip"
+            f"  - set a new clip_name to write a separate clip (the fix for a Reader frame range)\n"
+            f"  - set start_timecode to {ex_tc}, only if these frames really belong at that time"
         )
     current = existing.versions.get(existing.current_version)
     if current is None or not current.spans:
